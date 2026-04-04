@@ -46,7 +46,14 @@
             #pragma geometry geom
             #pragma fragment frag
             
+            // Compilación de Luz Principal
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE
+            
+            // Compilación de Luces Adicionales (Standard y Forward+ para Unity 6)
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS
+            #pragma multi_compile _ _FORWARD_PLUS
+            #pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
+            
             #pragma multi_compile_fog 
             #pragma shader_feature PSX_FLAT_SHADING
             #pragma shader_feature CUSTOM_VERTEX_GRID
@@ -66,7 +73,7 @@
                 float4 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
                 float3 normalOS : NORMAL;
-                float4 color : COLOR; 
+                // El color de vértice ha sido extirpado para evitar lecturas nulas
             };
 
             struct v2g
@@ -74,7 +81,6 @@
                 float4 positionOS : TEXCOORD3;
                 float2 uv : TEXCOORD0;
                 float3 normalWS : NORMAL;
-                float4 color : COLOR; 
             };
 
             struct g2f
@@ -85,7 +91,6 @@
                 float3 normalWS : NORMAL;
                 float3 viewDirWS : TEXCOORD2;
                 float3 positionWS : TEXCOORD3;
-                float4 color : COLOR; 
             };
 
             TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
@@ -129,7 +134,6 @@
                 output.positionOS = input.positionOS;
                 output.uv = TRANSFORM_TEX(input.uv, _MainTex);
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
-                output.color = input.color; 
                 return output;
             }
 
@@ -162,7 +166,6 @@
                     o[i].positionWS = worldPos;
                     o[i].normalWS = normalize(flatNormalWS);
                     o[i].viewDirWS = GetWorldSpaceNormalizeViewDir(worldPos);
-                    o[i].color = IN[i].color;
 
                     float affineFactor = _PSX_TextureWarpingMode < 0.5f ? length(viewPos) : max(clipPos.w, 0.1);
                     affineFactor = lerp(1.0, affineFactor, _PSX_TextureWarpingFactor);
@@ -176,7 +179,9 @@
             half4 frag(g2f input, float4 screenPos : SV_POSITION) : SV_Target
             {
                 float2 uv = input.affineUV.xy / input.affineUV.z;
-                half4 albedo = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color * input.color;
+                
+                // Color base garantizado independientemente del vértice
+                half4 albedo = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
                 clip(albedo.a - _Cutoff);
 
                 half metallic = _Metallic;
@@ -190,10 +195,22 @@
                 #else
                     float4 shadowCoord = float4(0, 0, 0, 0);
                 #endif
+                
                 Light mainLight = GetMainLight(shadowCoord);
-                float3 retroNormal = normalize(lerp(mainLight.direction, input.normalWS, _PSX_LightingNormalFactor));
+                float3 retroNormalMain = normalize(lerp(mainLight.direction, input.normalWS, _PSX_LightingNormalFactor));
+                half3 LitColor = LightingPhysicallyBased(brdfData, mainLight, retroNormalMain, input.viewDirWS);
 
-                half3 LitColor = LightingPhysicallyBased(brdfData, mainLight, retroNormal, input.viewDirWS);
+                #if defined(_ADDITIONAL_LIGHTS) || defined(_FORWARD_PLUS)
+                    uint pixelLightCount = GetAdditionalLightsCount();
+                    for (uint lightIndex = 0; lightIndex < pixelLightCount; ++lightIndex)
+                    {
+                        Light additionalLight = GetAdditionalLight(lightIndex, input.positionWS);
+                        float3 retroNormalAdd = normalize(lerp(additionalLight.direction, input.normalWS, _PSX_LightingNormalFactor));
+                        LitColor += LightingPhysicallyBased(brdfData, additionalLight, retroNormalAdd, input.viewDirWS);
+                    }
+                #endif
+
+                // Ambientación
                 LitColor += albedo.rgb * half3(0.1, 0.1, 0.1); 
 
                 half3 emissive = SAMPLE_TEXTURE2D(_EmissiveTex, sampler_EmissiveTex, uv).rgb * _EmissionColor.rgb;
@@ -201,6 +218,7 @@
 
                 finalColor.rgb = MixFog(finalColor.rgb, input.fogFactor);
                 half4 finalColorWithAlpha = half4(finalColor, albedo.a);
+                
                 if (_PSX_ObjectDithering > 0.5)
                 {
                     finalColorWithAlpha = PSX_DitherColor(finalColorWithAlpha, int2(screenPos.xy));
