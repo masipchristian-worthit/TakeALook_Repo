@@ -1,5 +1,9 @@
 fileFormatVersion: 2
+<<<<<<< HEAD
 guid: ba824261fbe23dd428518ea8b94eb214
+=======
+guid: fccddd21b387a4440a141d0bae60df4f
+>>>>>>> parent of cb74595 (Merge branch 'Cristian' into Christian)
 NativeFormatImporter:
   externalObjects: {}
   mainObjectFileID: 2100000

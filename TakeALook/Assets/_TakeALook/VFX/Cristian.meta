@@ -1,5 +1,9 @@
 fileFormatVersion: 2
+<<<<<<< HEAD
 guid: 07b0bb73be802d349b070895a495d024
+=======
+guid: 8ed6cb1ee504bba4d883d1105eb0de8b
+>>>>>>> parent of cb74595 (Merge branch 'Cristian' into Christian)
 folderAsset: yes
 DefaultImporter:
   externalObjects: {}
