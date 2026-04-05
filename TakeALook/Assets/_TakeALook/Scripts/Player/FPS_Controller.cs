@@ -23,6 +23,10 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] bool isSprinting;
     [SerializeField] bool IsCrouching;
 
+    [Header("Weapon State")]
+    [SerializeField] bool isPistolEquipped;
+    [SerializeField] bool isPistolUnequipped = true;
+
     [Header("Interaction")]
     [SerializeField] float interactDistance = 3f;
     [SerializeField] LayerMask interactLayer;
@@ -48,6 +52,9 @@ public class FPS_Controller : MonoBehaviour
     float defaultXPos;
     float timer;
 
+    CodeDoor[] codeDoors;
+    bool isUsingCodePanel;
+
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
@@ -61,6 +68,10 @@ public class FPS_Controller : MonoBehaviour
 
         defaultYPos = camHolder.transform.localPosition.y;
         defaultXPos = camHolder.transform.localPosition.x;
+
+        UpdateWeaponBools();
+
+        codeDoors = FindObjectsByType<CodeDoor>(FindObjectsSortMode.None);
     }
 
     void Update()
@@ -69,18 +80,58 @@ public class FPS_Controller : MonoBehaviour
 
         Debug.DrawRay(camHolder.transform.position, camHolder.transform.forward * 3f, Color.red);
 
+        CheckIfUsingCodePanel();
+
+        if (isUsingCodePanel)
+            return;
+
         Interact();
         HeadBob();
     }
 
     private void FixedUpdate()
     {
+        if (isUsingCodePanel) return;
+
         Movement();
     }
 
     private void LateUpdate()
     {
+        if (isUsingCodePanel) return;
+
         CameraLook();
+    }
+
+    void CheckIfUsingCodePanel()
+    {
+        isUsingCodePanel = false;
+
+        if (codeDoors == null) return;
+
+        for (int i = 0; i < codeDoors.Length; i++)
+        {
+            if (codeDoors[i] != null && codeDoors[i].IsUsingPanel())
+            {
+                isUsingCodePanel = true;
+                break;
+            }
+        }
+
+        if (isUsingCodePanel)
+        {
+            moveInput = Vector2.zero;
+            lookInput = Vector2.zero;
+            isSprinting = false;
+
+            if (rb != null)
+            {
+                Vector3 velocity = rb.linearVelocity;
+                velocity.x = 0f;
+                velocity.z = 0f;
+                rb.linearVelocity = velocity;
+            }
+        }
     }
 
     void CameraLook()
@@ -112,6 +163,7 @@ public class FPS_Controller : MonoBehaviour
     {
         if (isGrounded) rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
     }
+
     void HeadBob()
     {
         if (moveInput.magnitude < 0.1f || !isGrounded)
@@ -123,7 +175,6 @@ public class FPS_Controller : MonoBehaviour
             pos.x = Mathf.Lerp(pos.x, defaultXPos, Time.deltaTime * 5f);
             camHolder.transform.localPosition = pos;
 
-            // reset tilt
             Vector3 rot = camHolder.transform.localEulerAngles;
             rot.z = Mathf.LerpAngle(rot.z, 0f, Time.deltaTime * 5f);
             camHolder.transform.localEulerAngles = new Vector3(lookRotation, 0f, rot.z);
@@ -158,7 +209,7 @@ public class FPS_Controller : MonoBehaviour
 
         if (Physics.Raycast(ray, out hit, interactDistance, interactLayer))
         {
-            if (Keyboard.current.eKey.wasPressedThisFrame)
+            if (Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
             {
                 DoorOpen door = hit.collider.GetComponent<DoorOpen>();
 
@@ -170,24 +221,67 @@ public class FPS_Controller : MonoBehaviour
         }
     }
 
+    void UpdateWeaponBools()
+    {
+        isPistolUnequipped = !isPistolEquipped;
+    }
+
+    public void EquipPistol()
+    {
+        isPistolEquipped = true;
+        UpdateWeaponBools();
+    }
+
+    public void UnequipPistol()
+    {
+        isPistolEquipped = false;
+        UpdateWeaponBools();
+    }
+
+    public bool IsPistolEquipped()
+    {
+        return isPistolEquipped;
+    }
+
+    public bool IsPistolUnequipped()
+    {
+        return isPistolUnequipped;
+    }
+
     #region Input Methods
     public void OnMove(InputAction.CallbackContext context)
     {
+        if (isUsingCodePanel)
+        {
+            moveInput = Vector2.zero;
+            return;
+        }
+
         moveInput = context.ReadValue<Vector2>();
     }
 
     public void OnLook(InputAction.CallbackContext context)
     {
+        if (isUsingCodePanel)
+        {
+            lookInput = Vector2.zero;
+            return;
+        }
+
         lookInput = context.ReadValue<Vector2>();
     }
 
     public void OnJump(InputAction.CallbackContext context)
     {
+        if (isUsingCodePanel) return;
+
         if (context.performed) Jump();
     }
 
     public void OnCrouch(InputAction.CallbackContext context)
     {
+        if (isUsingCodePanel) return;
+
         if (context.performed)
         {
             IsCrouching = !IsCrouching;
@@ -197,6 +291,12 @@ public class FPS_Controller : MonoBehaviour
 
     public void OnSprint(InputAction.CallbackContext context)
     {
+        if (isUsingCodePanel)
+        {
+            isSprinting = false;
+            return;
+        }
+
         if (context.performed && !IsCrouching) isSprinting = true;
         if (context.canceled) isSprinting = false;
     }
