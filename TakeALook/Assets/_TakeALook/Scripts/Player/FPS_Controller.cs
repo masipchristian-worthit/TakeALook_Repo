@@ -198,7 +198,7 @@ public class FPS_Controller : MonoBehaviour
 
         camHolder.transform.localPosition = newPos;
 
-        float tilt = Mathf.Sin(timer) * tiltAmount;
+        float tilt = Mathf.Sin(timer * 0.5f) * tiltAmount;
         camHolder.transform.localEulerAngles = new Vector3(lookRotation, 0f, tilt);
     }
 

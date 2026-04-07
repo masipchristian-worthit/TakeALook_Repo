@@ -4,12 +4,19 @@
     {
         [Header(Base Material)]
         _Color("Color (RGBA)", Color) = (1, 1, 1, 1)
-        _MainTex("Texture", 2D) = "white" {}
+        _MainTex("Albedo Texture", 2D) = "white" {}
         _Cutoff("Alpha cutoff", Range(0,1)) = 0.1
         
-        [Header(PBR Properties)]
-        _Metallic("Metallic", Range(0, 1)) = 0.0
-        _Roughness("Roughness", Range(0, 1)) = 0.5
+        [Header(PBR Maps)]
+        _MetallicTex("Metallic Map (R)", 2D) = "white" {}
+        _Metallic("Metallic Multiplier", Range(0, 1)) = 0.0
+        
+        _RoughnessTex("Roughness Map (R)", 2D) = "white" {}
+        _Roughness("Roughness Multiplier", Range(0, 1)) = 0.5
+        
+        [Header(Surface Detail)]
+        _HeightMap("Height Map (R)", 2D) = "black" {}
+        _HeightAmplitude("Height Amplitude", Range(0, 0.1)) = 0.02
         
         [Header(Emission and HDR Support)]
         [HDR] _EmissionColor("Emission Color (HDR)", Color) = (0,0,0,0)
@@ -46,10 +53,7 @@
             #pragma geometry geom
             #pragma fragment frag
             
-            // Compilación de Luz Principal
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE
-            
-            // Compilación de Luces Adicionales (Standard y Forward+ para Unity 6)
             #pragma multi_compile _ _ADDITIONAL_LIGHTS
             #pragma multi_compile _ _FORWARD_PLUS
             #pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
@@ -73,7 +77,7 @@
                 float4 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
                 float3 normalOS : NORMAL;
-                // El color de vértice ha sido extirpado para evitar lecturas nulas
+                float4 tangentOS : TANGENT; // Extracción de la tangente del modelo 3D
             };
 
             struct v2g
@@ -81,6 +85,7 @@
                 float4 positionOS : TEXCOORD3;
                 float2 uv : TEXCOORD0;
                 float3 normalWS : NORMAL;
+                float4 tangentWS : TEXCOORD4;
             };
 
             struct g2f
@@ -91,10 +96,15 @@
                 float3 normalWS : NORMAL;
                 float3 viewDirWS : TEXCOORD2;
                 float3 positionWS : TEXCOORD3;
+                float3 tangentWS : TEXCOORD4;
+                float3 bitangentWS : TEXCOORD5;
             };
 
             TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
-            TEXTURE2D(_EmissiveTex); SAMPLER(sampler_EmissiveTex);
+            TEXTURE2D(_EmissiveTex); 
+            TEXTURE2D(_MetallicTex);
+            TEXTURE2D(_RoughnessTex);
+            TEXTURE2D(_HeightMap);
             
             CBUFFER_START(UnityPerMaterial)
                 float4 _MainTex_ST;
@@ -104,6 +114,7 @@
                 float _CustomGridSize;
                 half _Metallic;
                 half _Roughness;
+                float _HeightAmplitude;
             CBUFFER_END
 
             float3 SnapVertexToGrid(float3 vertex)
@@ -134,6 +145,9 @@
                 output.positionOS = input.positionOS;
                 output.uv = TRANSFORM_TEX(input.uv, _MainTex);
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+                
+                // Transformación del vector Tangente al espacio de mundo
+                output.tangentWS = float4(TransformObjectToWorldDir(input.tangentOS.xyz), input.tangentOS.w);
                 return output;
             }
 
@@ -164,8 +178,15 @@
                     o[i].positionCS = lerp(viewSnappedClip, clipSnappedClip, _PSX_VertexWobbleMode);
                     o[i].fogFactor = ComputeFogFactor(o[i].positionCS.z);
                     o[i].positionWS = worldPos;
+                    
                     o[i].normalWS = normalize(flatNormalWS);
                     o[i].viewDirWS = GetWorldSpaceNormalizeViewDir(worldPos);
+
+                    // Cálculo matemático de la Bitangente para la matriz TBN
+                    float3 tangentWS = normalize(IN[i].tangentWS.xyz);
+                    float tangentSign = IN[i].tangentWS.w * unity_WorldTransformParams.w;
+                    o[i].tangentWS = tangentWS;
+                    o[i].bitangentWS = cross(o[i].normalWS, tangentWS) * tangentSign;
 
                     float affineFactor = _PSX_TextureWarpingMode < 0.5f ? length(viewPos) : max(clipPos.w, 0.1);
                     affineFactor = lerp(1.0, affineFactor, _PSX_TextureWarpingFactor);
@@ -180,12 +201,28 @@
             {
                 float2 uv = input.affineUV.xy / input.affineUV.z;
                 
-                // Color base garantizado independientemente del vértice
+                // --- MATEMÁTICA DE PARALLAX (HEIGHT MAP) ---
+                // 1. Construimos la matriz TBN (Tangent-Bitangent-Normal)
+                float3x3 tangentSpaceTransform = float3x3(input.tangentWS, input.bitangentWS, input.normalWS);
+                // 2. Transformamos la dirección de la cámara al espacio de la textura
+                float3 viewDirTS = mul(tangentSpaceTransform, input.viewDirWS);
+                // 3. Leemos el mapa de altura
+                float height = SAMPLE_TEXTURE2D(_HeightMap, sampler_MainTex, uv).r;
+                // 4. Calculamos el desplazamiento visual (añadimos +0.42 al divisor para estabilizar ángulos extremos)
+                float2 parallaxOffset = (viewDirTS.xy / (viewDirTS.z + 0.42)) * (height * _HeightAmplitude);
+                // 5. Aplicamos la distorsión a las coordenadas UV maestras
+                uv += parallaxOffset;
+                
+                // Leemos las texturas usando el UV modificado por el Parallax y el Affine Mapping
                 half4 albedo = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Color;
                 clip(albedo.a - _Cutoff);
 
-                half metallic = _Metallic;
-                half smoothness = 1.0h - _Roughness; 
+                // --- MATEMÁTICA PBR MODULAR ---
+                half metallicMap = SAMPLE_TEXTURE2D(_MetallicTex, sampler_MainTex, uv).r;
+                half roughnessMap = SAMPLE_TEXTURE2D(_RoughnessTex, sampler_MainTex, uv).r;
+
+                half metallic = metallicMap * _Metallic;
+                half smoothness = 1.0h - (roughnessMap * _Roughness); 
                 
                 BRDFData brdfData;
                 InitializeBRDFData(albedo.rgb, metallic, half3(0.04, 0.04, 0.04), smoothness, albedo.a, brdfData);
@@ -210,10 +247,9 @@
                     }
                 #endif
 
-                // Ambientación
                 LitColor += albedo.rgb * half3(0.1, 0.1, 0.1); 
 
-                half3 emissive = SAMPLE_TEXTURE2D(_EmissiveTex, sampler_EmissiveTex, uv).rgb * _EmissionColor.rgb;
+                half3 emissive = SAMPLE_TEXTURE2D(_EmissiveTex, sampler_MainTex, uv).rgb * _EmissionColor.rgb;
                 half3 finalColor = LitColor + emissive;
 
                 finalColor.rgb = MixFog(finalColor.rgb, input.fogFactor);
