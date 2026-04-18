@@ -32,6 +32,10 @@ public class CodeDoor : MonoBehaviour
     [SerializeField] GraphicRaycaster panelRaycaster;
     [SerializeField] EventSystem eventSystem;
 
+    [Header("Doorway Blockers")]
+    [SerializeField] Collider[] doorwayBlockers;
+    [SerializeField] float unblockAtOpenPercent = 0.9f;
+
     Vector3 closedPosition;
     Vector3 openPosition;
 
@@ -86,6 +90,7 @@ public class CodeDoor : MonoBehaviour
 
         HandleInteraction(distanceToPanel);
         HandleDoorMovement();
+        UpdateDoorwayBlockers();
 
         if (isUnlocked && !isUsingPanel)
         {
@@ -141,12 +146,12 @@ public class CodeDoor : MonoBehaviour
     {
         if (isOpening)
         {
-            transform.position = Vector3.Lerp(transform.position, openPosition, speed * Time.deltaTime);
+            transform.position = Vector3.MoveTowards(transform.position, openPosition, speed * Time.deltaTime);
         }
 
         if (isClosing)
         {
-            transform.position = Vector3.Lerp(transform.position, closedPosition, speed * Time.deltaTime);
+            transform.position = Vector3.MoveTowards(transform.position, closedPosition, speed * Time.deltaTime);
         }
     }
 
@@ -412,6 +417,23 @@ public class CodeDoor : MonoBehaviour
 
         if (feedbackText != null)
             feedbackText.text = "";
+    }
+
+    void UpdateDoorwayBlockers()
+    {
+        if (doorwayBlockers == null || doorwayBlockers.Length == 0) return;
+
+        float totalDistance = Vector3.Distance(closedPosition, openPosition);
+        float currentDistance = Vector3.Distance(transform.position, closedPosition);
+        float openPercent = totalDistance > 0f ? currentDistance / totalDistance : 0f;
+
+        bool shouldBlock = openPercent < unblockAtOpenPercent;
+
+        foreach (Collider col in doorwayBlockers)
+        {
+            if (col != null)
+                col.enabled = shouldBlock;
+        }
     }
 
     public bool IsUsingPanel()

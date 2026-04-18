@@ -16,6 +16,10 @@ public class DoorOpen : MonoBehaviour
     [SerializeField] float openDistance = 3f;
     [SerializeField] float closeDistance = 4f;
 
+    [Header("Blocker")]
+    [SerializeField] Collider[] doorwayBlockers;
+    [SerializeField] float unblockAtOpenPercent = 0.9f;
+
     Vector3 closedPosition;
     Vector3 openPosition;
 
@@ -39,28 +43,38 @@ public class DoorOpen : MonoBehaviour
     {
         if (player == null) return;
 
-        float distance = Vector3.Distance(player.position, transform.position);
+        float distance = Vector3.Distance(player.position, closedPosition);
 
-        if (autoOpen && distance <= openDistance)
-        {
-            OpenDoor();
-        }
-
-        if (distance > closeDistance)
+        if (!canReopenAfterPassing && playerHasPassed)
         {
             isOpening = false;
             isClosing = true;
         }
+        else
+        {
+            if (autoOpen && distance <= openDistance)
+            {
+                OpenDoor();
+            }
+
+            if (distance > closeDistance)
+            {
+                isOpening = false;
+                isClosing = true;
+            }
+        }
 
         if (isOpening)
         {
-            transform.position = Vector3.Lerp(transform.position, openPosition, speed * Time.deltaTime);
+            transform.position = Vector3.MoveTowards(transform.position, openPosition, speed * Time.deltaTime);
         }
 
         if (isClosing)
         {
-            transform.position = Vector3.Lerp(transform.position, closedPosition, speed * Time.deltaTime);
+            transform.position = Vector3.MoveTowards(transform.position, closedPosition, speed * Time.deltaTime);
         }
+
+        UpdateBlocker();
     }
 
     public void OpenDoor()
@@ -75,5 +89,22 @@ public class DoorOpen : MonoBehaviour
     public void MarkPlayerPassed()
     {
         playerHasPassed = true;
+    }
+
+    void UpdateBlocker()
+    {
+        if (doorwayBlockers == null || doorwayBlockers.Length == 0) return;
+
+        float total = Vector3.Distance(closedPosition, openPosition);
+        float current = Vector3.Distance(closedPosition, transform.position);
+        float openPercent = total > 0f ? current / total : 0f;
+
+        bool shouldBlock = openPercent < unblockAtOpenPercent;
+
+        foreach (Collider col in doorwayBlockers)
+        {
+            if (col != null)
+                col.enabled = shouldBlock;
+        }
     }
 }
