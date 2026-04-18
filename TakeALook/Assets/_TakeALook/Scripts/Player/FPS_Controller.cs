@@ -36,12 +36,12 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] float sprintMultiplier = 1.5f;
     [SerializeField] float crouchMultiplier = 0.5f;
 
+    [Header("Component References")]
+    [Tooltip("Arrastra aquí manualmente el GameObject Manos_Pistola desde el Inspector")]
     [SerializeField] Animator anim;
     #endregion
 
     Rigidbody rb;
-    
-    private GunSystem gunSystem;
 
     Vector2 moveInput;
     Vector2 lookInput;
@@ -57,6 +57,7 @@ public class FPS_Controller : MonoBehaviour
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
+        // ELIMINADO: anim = GetComponentInChildren<Animator>(); para evitar falsos positivos
     }
 
     void Start()
@@ -156,13 +157,6 @@ public class FPS_Controller : MonoBehaviour
         rb.AddForce(velocityChange, ForceMode.VelocityChange);
     }
 
-    /*
-    void Jump()
-    {
-        if (isGrounded) rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
-    }
-    */
-
     void HeadBob()
     {
         if (moveInput.magnitude < 0.1f || !isGrounded)
@@ -220,15 +214,14 @@ public class FPS_Controller : MonoBehaviour
         }
     }
 
-
-
-    //VOID DE ANIMACIONESSSSSSS AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
     void AnimationHandle()
     {
+        // Cláusula de seguridad: Si no hay animador asignado o el arma está guardada (apagada), no hacemos nada.
+        if (anim == null || !anim.gameObject.activeInHierarchy) return;
+
         if (moveInput.magnitude > 0.01f) anim.SetBool("isWalking", true);
         else anim.SetBool("isWalking", false);
     }
-
 
     #region Input Methods
     public void OnMove(InputAction.CallbackContext context)
@@ -253,15 +246,6 @@ public class FPS_Controller : MonoBehaviour
         lookInput = context.ReadValue<Vector2>();
     }
 
-   /* 
-    public void OnJump(InputAction.CallbackContext context)
-    {
-        if (isUsingCodePanel) return;
-
-        if (context.performed) Jump();
-    }
-   */
-
     public void OnCrouch(InputAction.CallbackContext context)
     {
         if (isUsingCodePanel) return;
@@ -269,7 +253,8 @@ public class FPS_Controller : MonoBehaviour
         if (context.performed)
         {
             IsCrouching = !IsCrouching;
-            anim.SetBool("IsCrouching", IsCrouching);
+            // Quitamos el SetBool de IsCrouching si el Animator no tiene ese parámetro configurado aún
+            // anim.SetBool("IsCrouching", IsCrouching); 
         }
     }
 

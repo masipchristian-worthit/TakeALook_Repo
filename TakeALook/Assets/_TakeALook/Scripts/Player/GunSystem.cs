@@ -9,17 +9,17 @@ public class GunSystem : MonoBehaviour
     #region Serialized Fields
     [Header("Weapon State")]
     [SerializeField] private BulletType currentBullet = BulletType.Wolf;
-    [SerializeField] private float weaponSwapCooldown = 0.5f; // Ligeramente más alto para dar peso al cambio
-    
+    [SerializeField] private float weaponSwapCooldown = 0.5f;
+
     [Header("Weapon Transitions")]
-    [SerializeField] bool isGunCollected = false;
     [SerializeField] GameObject arms;
-    [SerializeField] private float drawCooldown = 0.5f; // Tiempo de espera antes de poder usar el arma
-    private bool _isTransitioning = false; // Seguro anti-spam de botones
+    [SerializeField] private float drawCooldown = 0.5f;
+    private bool _isTransitioning = false;
 
     [Header("General References")]
     [SerializeField] private Camera fpsCam;
     [SerializeField] private LayerMask impactLayer;
+    [Tooltip("Arrastra aquí manualmente el GameObject Manos_Pistola desde el Inspector")]
     [SerializeField] private Animator anim;
     [SerializeField] private GameObject shootVFX;
 
@@ -41,11 +41,11 @@ public class GunSystem : MonoBehaviour
         public int damage;
         public float range;
         public float spread;
-        public float shootingCooldown; // Tiempo mínimo mecánico entre disparos
-        public int magCapacity;        // Capacidad máxima del cargador
-        public int currentMag;         // Balas actualmente en el arma
-        public int reserveAmmo;        // Balas en la mochila (Survival Horror)
-        public int maxReserveAmmo;     // Límite de balas en la mochila
+        public float shootingCooldown;
+        public int magCapacity;
+        public int currentMag;
+        public int reserveAmmo;
+        public int maxReserveAmmo;
         public GameObject impactEffect;
     }
     #endregion
@@ -58,21 +58,28 @@ public class GunSystem : MonoBehaviour
 
     private void Awake()
     {
-
-
-        // Estado inicial de Survival Horror estricto: Desarmado y sin balas
+        // Survival Horror: Por defecto el arma está guardada
         _isGunDrawn = false;
 
-        wolfStats.currentMag = 0; wolfStats.reserveAmmo = 0;
+        // DEBUG TDAH: Balas infinitas temporales para que puedas testear que dispara
+        wolfStats.currentMag = wolfStats.magCapacity;
+        wolfStats.reserveAmmo = 99;
+
         bullStats.currentMag = 0; bullStats.reserveAmmo = 0;
         eagleStats.currentMag = 0; eagleStats.reserveAmmo = 0;
 
         UpdateActiveStats();
     }
 
+    private void Start()
+    {
+        // CRÍTICO: Aseguramos que al darle al Play, los brazos empiecen apagados
+        // Así forzamos al jugador a usar OnDrawn para sacarlos.
+        if (arms != null) arms.SetActive(false);
+    }
+
     private void Update()
     {
-        // Solo escuchamos el scroll si el arma está sacada y no estamos en medio de una acción crítica
         if (_isGunDrawn && !_isShooting && !_isReloading && _canSwap)
         {
             HandleScrollInput();
@@ -100,7 +107,6 @@ public class GunSystem : MonoBehaviour
         }
     }
 
-   
     public void AddAmmo(BulletType type, int amount)
     {
         switch (type)
@@ -115,7 +121,7 @@ public class GunSystem : MonoBehaviour
                 eagleStats.reserveAmmo = Mathf.Min(eagleStats.reserveAmmo + amount, eagleStats.maxReserveAmmo);
                 break;
         }
-        if (type == currentBullet) UpdateActiveStats(); // Refrescar si es el arma actual
+        if (type == currentBullet) UpdateActiveStats();
     }
     #endregion
 
@@ -129,7 +135,7 @@ public class GunSystem : MonoBehaviour
             if (next > 2) next = 0;
 
             currentBullet = (BulletType)next;
-            UpdateActiveStats(); // Solo se llama cuando hay un cambio real
+            UpdateActiveStats();
             StartCoroutine(SwapCooldownRoutine());
         }
     }
@@ -146,11 +152,9 @@ public class GunSystem : MonoBehaviour
 
         anim.SetTrigger("Fire");
 
-        // Sincronización estricta: Esperar un frame, leer la animación y esperar su duración
         yield return null;
         float animDuration = anim.GetCurrentAnimatorStateInfo(0).length;
 
-        // Compara la duración de la animación con el cooldown mecánico, usa el mayor
         yield return new WaitForSeconds(Mathf.Max(animDuration, _activeStats.shootingCooldown));
 
         _isShooting = false;
@@ -174,10 +178,8 @@ public class GunSystem : MonoBehaviour
                 if (health != null)
                 {
                     health.TakeDamage(_activeStats.damage);
-                    //if (currentBullet == BulletType.Bull) health.ApplyStun();
                 }
             }
-
         }
     }
 
@@ -186,11 +188,10 @@ public class GunSystem : MonoBehaviour
         _isReloading = true;
         anim.SetTrigger("Reload");
 
-        yield return null; // Esperar transición del Animator
+        yield return null;
         float animDuration = anim.GetCurrentAnimatorStateInfo(0).length;
         yield return new WaitForSeconds(animDuration);
 
-        // Matemáticas de Survival Horror
         int bulletsNeeded = _activeStats.magCapacity - _activeStats.currentMag;
         int bulletsToReload = Mathf.Min(bulletsNeeded, _activeStats.reserveAmmo);
 
@@ -204,7 +205,6 @@ public class GunSystem : MonoBehaviour
     private IEnumerator SwapCooldownRoutine()
     {
         _canSwap = false;
-        // Aquí podrías añadir un anim.SetTrigger("Swap");
         yield return new WaitForSeconds(weaponSwapCooldown);
         _canSwap = true;
     }
@@ -213,6 +213,9 @@ public class GunSystem : MonoBehaviour
     #region Input Methods
     public void OnShoot(InputAction.CallbackContext context)
     {
+        // Chivato de Debug. Si no ves esto en consola, el Input System no encuentra el script.
+        if (context.performed) Debug.Log("Señal de Disparo recibida en GunSystem.");
+
         if (context.performed && _isGunDrawn && _canShoot && !_isReloading && _activeStats.currentMag > 0)
         {
             StartCoroutine(ShootRoutine());
@@ -221,6 +224,8 @@ public class GunSystem : MonoBehaviour
 
     public void OnReload(InputAction.CallbackContext context)
     {
+        if (context.performed) Debug.Log("Señal de Recarga recibida en GunSystem.");
+
         bool needsReload = _activeStats.currentMag < _activeStats.magCapacity;
         bool hasReserveAmmo = _activeStats.reserveAmmo > 0;
 
@@ -234,13 +239,16 @@ public class GunSystem : MonoBehaviour
     {
         if (context.performed && !_isShooting && !_isReloading && _isGunDrawn)
         {
-             anim.SetTrigger("Inspect"); // Animación de inspección
+            anim.SetTrigger("Inspect");
         }
     }
 
     public void OnDrawn(InputAction.CallbackContext context)
     {
+        if (context.performed) Debug.Log("Señal de DRAW recibida en GunSystem. Arma sacada: " + _isGunDrawn);
+
         if (!context.performed || _isShooting || _isReloading || _isTransitioning) return;
+
         if (!_isGunDrawn)
         {
             StartCoroutine(DrawWeaponRoutine());
@@ -255,12 +263,20 @@ public class GunSystem : MonoBehaviour
     {
         _isTransitioning = true;
         _isGunDrawn = true;
+
+        // 1. Encendemos los brazos
         arms.gameObject.SetActive(true);
 
+        // 2. EL FRAME VITAL PARA QUE UNITY REACCIONE
+        yield return null;
+
+        // 3. Mandamos las órdenes al Animator
         anim.SetFloat("DrawSpeed", 1f);
         anim.SetTrigger("Draw");
 
+        // 4. Esperamos otro frame para que el Animator actualice el estado interno
         yield return null;
+
         float animDuration = anim.GetCurrentAnimatorStateInfo(0).length;
         yield return new WaitForSeconds(animDuration);
 
@@ -271,6 +287,7 @@ public class GunSystem : MonoBehaviour
         _canReload = true;
 
         _isTransitioning = false;
+        Debug.Log("Proceso de Draw completado.");
     }
 
     private IEnumerator SheathWeaponRoutine()
@@ -292,7 +309,7 @@ public class GunSystem : MonoBehaviour
         _isGunDrawn = false;
 
         _isTransitioning = false;
+        Debug.Log("Proceso de Sheath completado.");
     }
-
     #endregion
 }
