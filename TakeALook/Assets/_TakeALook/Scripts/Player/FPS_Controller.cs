@@ -23,10 +23,6 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] bool isSprinting;
     [SerializeField] bool IsCrouching;
 
-    [Header("Weapon State")]
-    [SerializeField] bool isPistolEquipped;
-    [SerializeField] bool isPistolUnequipped = true;
-
     [Header("Interaction")]
     [SerializeField] float interactDistance = 3f;
     [SerializeField] LayerMask interactLayer;
@@ -39,10 +35,13 @@ public class FPS_Controller : MonoBehaviour
 
     [SerializeField] float sprintMultiplier = 1.5f;
     [SerializeField] float crouchMultiplier = 0.5f;
+
+    [Header("Component References")]
+    [Tooltip("Arrastra aquí manualmente el GameObject Manos_Pistola desde el Inspector")]
+    [SerializeField] Animator anim;
     #endregion
 
     Rigidbody rb;
-    Animator anim;
 
     Vector2 moveInput;
     Vector2 lookInput;
@@ -58,7 +57,7 @@ public class FPS_Controller : MonoBehaviour
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
-        anim = GetComponent<Animator>();
+        // ELIMINADO: anim = GetComponentInChildren<Animator>(); para evitar falsos positivos
     }
 
     void Start()
@@ -68,8 +67,6 @@ public class FPS_Controller : MonoBehaviour
 
         defaultYPos = camHolder.transform.localPosition.y;
         defaultXPos = camHolder.transform.localPosition.x;
-
-        UpdateWeaponBools();
 
         codeDoors = FindObjectsByType<CodeDoor>(FindObjectsSortMode.None);
     }
@@ -87,6 +84,7 @@ public class FPS_Controller : MonoBehaviour
 
         Interact();
         HeadBob();
+        AnimationHandle();
     }
 
     private void FixedUpdate()
@@ -159,11 +157,6 @@ public class FPS_Controller : MonoBehaviour
         rb.AddForce(velocityChange, ForceMode.VelocityChange);
     }
 
-    void Jump()
-    {
-        if (isGrounded) rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
-    }
-
     void HeadBob()
     {
         if (moveInput.magnitude < 0.1f || !isGrounded)
@@ -221,31 +214,13 @@ public class FPS_Controller : MonoBehaviour
         }
     }
 
-    void UpdateWeaponBools()
+    void AnimationHandle()
     {
-        isPistolUnequipped = !isPistolEquipped;
-    }
+        // Cláusula de seguridad: Si no hay animador asignado o el arma está guardada (apagada), no hacemos nada.
+        if (anim == null || !anim.gameObject.activeInHierarchy) return;
 
-    public void EquipPistol()
-    {
-        isPistolEquipped = true;
-        UpdateWeaponBools();
-    }
-
-    public void UnequipPistol()
-    {
-        isPistolEquipped = false;
-        UpdateWeaponBools();
-    }
-
-    public bool IsPistolEquipped()
-    {
-        return isPistolEquipped;
-    }
-
-    public bool IsPistolUnequipped()
-    {
-        return isPistolUnequipped;
+        if (moveInput.magnitude > 0.01f) anim.SetBool("isWalking", true);
+        else anim.SetBool("isWalking", false);
     }
 
     #region Input Methods
@@ -271,13 +246,6 @@ public class FPS_Controller : MonoBehaviour
         lookInput = context.ReadValue<Vector2>();
     }
 
-    public void OnJump(InputAction.CallbackContext context)
-    {
-        if (isUsingCodePanel) return;
-
-        if (context.performed) Jump();
-    }
-
     public void OnCrouch(InputAction.CallbackContext context)
     {
         if (isUsingCodePanel) return;
@@ -285,7 +253,8 @@ public class FPS_Controller : MonoBehaviour
         if (context.performed)
         {
             IsCrouching = !IsCrouching;
-            anim.SetBool("IsCrouching", IsCrouching);
+            // Quitamos el SetBool de IsCrouching si el Animator no tiene ese parámetro configurado aún
+            // anim.SetBool("IsCrouching", IsCrouching); 
         }
     }
 
