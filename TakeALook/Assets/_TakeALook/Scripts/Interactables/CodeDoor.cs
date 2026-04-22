@@ -2,6 +2,9 @@ using UnityEngine;
 using TMPro;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Controls;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
+using System.Collections.Generic;
 
 public class CodeDoor : MonoBehaviour
 {
@@ -9,8 +12,12 @@ public class CodeDoor : MonoBehaviour
     [SerializeField] float openHeight = 3f;
     [SerializeField] float speed = 2f;
 
-    [Header("Distances")]
+    [Header("Interaction")]
+    [SerializeField] Transform interactionPoint;
     [SerializeField] float interactDistance = 2.5f;
+    [SerializeField] float closePanelDistance = 3f;
+
+    [Header("Door Auto Open")]
     [SerializeField] float openDistance = 3f;
     [SerializeField] float closeDistance = 4f;
 
@@ -22,6 +29,12 @@ public class CodeDoor : MonoBehaviour
     [SerializeField] GameObject codePanelUI;
     [SerializeField] TMP_Text codeText;
     [SerializeField] TMP_Text feedbackText;
+    [SerializeField] GraphicRaycaster panelRaycaster;
+    [SerializeField] EventSystem eventSystem;
+
+    [Header("Doorway Blockers")]
+    [SerializeField] Collider[] doorwayBlockers;
+    [SerializeField] float unblockAtOpenPercent = 0.9f;
 
     Vector3 closedPosition;
     Vector3 openPosition;
@@ -31,6 +44,7 @@ public class CodeDoor : MonoBehaviour
     bool isUnlocked;
     bool isUsingPanel;
     bool codeAccepted;
+    bool inputLocked;
 
     string currentCode = "";
 
@@ -51,40 +65,50 @@ public class CodeDoor : MonoBehaviour
         if (codePanelUI != null)
             codePanelUI.SetActive(false);
 
+        if (panelRaycaster == null && codePanelUI != null)
+            panelRaycaster = codePanelUI.GetComponentInParent<GraphicRaycaster>();
+
+        if (eventSystem == null)
+            eventSystem = FindFirstObjectByType<EventSystem>();
+
         if (codeText != null)
-            codeText.text = "_ _ _ _ _ _";
+            codeText.text = "_ _ _ _ _ _ _ _ _ _";
 
         if (feedbackText != null)
             feedbackText.text = "";
+
+        if (interactionPoint == null)
+            interactionPoint = transform;
     }
 
     private void Update()
     {
         if (player == null) return;
 
-        float distance = Vector3.Distance(player.position, transform.position);
+        float distanceToPanel = Vector3.Distance(player.position, interactionPoint.position);
+        float distanceToDoor = Vector3.Distance(player.position, transform.position);
 
-        HandleInteraction(distance);
+        HandleInteraction(distanceToPanel);
         HandleDoorMovement();
+        UpdateDoorwayBlockers();
 
         if (isUnlocked && !isUsingPanel)
         {
-            if (distance <= openDistance)
+            if (distanceToDoor <= openDistance)
             {
                 OpenDoor();
             }
-            else if (distance > closeDistance)
+            else if (distanceToDoor > closeDistance)
             {
                 CloseDoor();
             }
         }
     }
 
-    void HandleInteraction(float distance)
+    void HandleInteraction(float distanceToPanel)
     {
-        bool playerInRange = distance <= interactDistance;
+        bool playerInRange = distanceToPanel <= interactDistance;
 
-        // Si ya está desbloqueada, nunca más mostramos Press E ni menú
         if (isUnlocked)
         {
             if (pressEText != null)
@@ -108,6 +132,12 @@ public class CodeDoor : MonoBehaviour
             if (pressEText != null)
                 pressEText.SetActive(false);
 
+            if (distanceToPanel > closePanelDistance)
+            {
+                CloseCodePanel();
+                return;
+            }
+
             HandleCodeInput();
         }
     }
@@ -116,12 +146,12 @@ public class CodeDoor : MonoBehaviour
     {
         if (isOpening)
         {
-            transform.position = Vector3.Lerp(transform.position, openPosition, speed * Time.deltaTime);
+            transform.position = Vector3.MoveTowards(transform.position, openPosition, speed * Time.deltaTime);
         }
 
         if (isClosing)
         {
-            transform.position = Vector3.Lerp(transform.position, closedPosition, speed * Time.deltaTime);
+            transform.position = Vector3.MoveTowards(transform.position, closedPosition, speed * Time.deltaTime);
         }
     }
 
@@ -143,6 +173,7 @@ public class CodeDoor : MonoBehaviour
 
         isUsingPanel = true;
         codeAccepted = false;
+        inputLocked = false;
         currentCode = "";
 
         UpdateCodeText();
@@ -177,6 +208,7 @@ public class CodeDoor : MonoBehaviour
     void HandleCodeInput()
     {
         if (Keyboard.current == null) return;
+        if (inputLocked) return;
 
         if (Keyboard.current.escapeKey.wasPressedThisFrame)
         {
@@ -204,6 +236,8 @@ public class CodeDoor : MonoBehaviour
         CheckNumberKey("7", Keyboard.current.digit7Key, Keyboard.current.numpad7Key);
         CheckNumberKey("8", Keyboard.current.digit8Key, Keyboard.current.numpad8Key);
         CheckNumberKey("9", Keyboard.current.digit9Key, Keyboard.current.numpad9Key);
+
+        HandleMousePanelClick();
     }
 
     void CheckNumberKey(string number, KeyControl normalKey, KeyControl keypadKey)
@@ -215,9 +249,63 @@ public class CodeDoor : MonoBehaviour
         }
     }
 
+    void HandleMousePanelClick()
+    {
+        if (Mouse.current == null) return;
+        if (!Mouse.current.leftButton.wasPressedThisFrame) return;
+        if (panelRaycaster == null || eventSystem == null) return;
+
+        PointerEventData pointerData = new PointerEventData(eventSystem);
+        pointerData.position = Mouse.current.position.ReadValue();
+
+        List<RaycastResult> results = new List<RaycastResult>();
+        panelRaycaster.Raycast(pointerData, results);
+
+        if (results.Count == 0) return;
+
+        for (int i = 0; i < results.Count; i++)
+        {
+            GameObject clickedObject = results[i].gameObject;
+            Transform current = clickedObject.transform;
+
+            while (current != null)
+            {
+                string objName = current.name.ToUpper();
+
+                if (objName == "0" || objName == "1" || objName == "2" || objName == "3" || objName == "4" ||
+                    objName == "5" || objName == "6" || objName == "7" || objName == "8" || objName == "9")
+                {
+                    PressDigit(objName);
+                    return;
+                }
+
+                if (objName == "BACK")
+                {
+                    PressBackspace();
+                    return;
+                }
+
+                if (objName == "CLEAR")
+                {
+                    PressClear();
+                    return;
+                }
+
+                if (objName == "ENTER")
+                {
+                    PressEnter();
+                    return;
+                }
+
+                current = current.parent;
+            }
+        }
+    }
+
     public void PressDigit(string digit)
     {
         if (!isUsingPanel) return;
+        if (inputLocked) return;
         if (currentCode.Length >= 6) return;
 
         currentCode += digit;
@@ -249,6 +337,11 @@ public class CodeDoor : MonoBehaviour
             feedbackText.text = "";
     }
 
+    public void TestUIButton()
+    {
+        Debug.Log("BOTON UI ESTA RECIBIENDO EL CLICK");
+    }
+
     public void PressEnter()
     {
         if (!isUsingPanel) return;
@@ -275,6 +368,7 @@ public class CodeDoor : MonoBehaviour
     void CheckCode()
     {
         CancelInvoke();
+        inputLocked = true;
 
         if (currentCode == correctCode)
         {
@@ -318,15 +412,43 @@ public class CodeDoor : MonoBehaviour
     void ResetCode()
     {
         currentCode = "";
+        inputLocked = false;
         UpdateCodeText();
 
         if (feedbackText != null)
             feedbackText.text = "";
     }
 
+    void UpdateDoorwayBlockers()
+    {
+        if (doorwayBlockers == null || doorwayBlockers.Length == 0) return;
+
+        float totalDistance = Vector3.Distance(closedPosition, openPosition);
+        float currentDistance = Vector3.Distance(transform.position, closedPosition);
+        float openPercent = totalDistance > 0f ? currentDistance / totalDistance : 0f;
+
+        bool shouldBlock = openPercent < unblockAtOpenPercent;
+
+        foreach (Collider col in doorwayBlockers)
+        {
+            if (col != null)
+                col.enabled = shouldBlock;
+        }
+    }
+
     public bool IsUsingPanel()
     {
-        // Esto evita que el player crea que sigue abierto si el panel ya no está activo
         return isUsingPanel && codePanelUI != null && codePanelUI.activeSelf;
+    }
+
+    private void OnDrawGizmosSelected()
+    {
+        Transform point = interactionPoint != null ? interactionPoint : transform;
+
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(point.position, interactDistance);
+
+        Gizmos.color = Color.red;
+        Gizmos.DrawWireSphere(point.position, closePanelDistance);
     }
 }
