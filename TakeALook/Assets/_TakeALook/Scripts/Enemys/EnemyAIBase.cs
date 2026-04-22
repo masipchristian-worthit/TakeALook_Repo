@@ -7,6 +7,7 @@ public class EnemyAIBase : MonoBehaviour
     [Header("AI Configuration")]
     [SerializeField] NavMeshAgent agent;
     [SerializeField] Transform target;
+    [SerializeField] Animator anim;
     [SerializeField] LayerMask targetLayer;
     [SerializeField] LayerMask groundLayer;
 
@@ -23,7 +24,7 @@ public class EnemyAIBase : MonoBehaviour
     [Header("Waypoint Wait")]
     [SerializeField] float minWaitAtWaypointTime = 3f;
     [SerializeField] float maxWaitAtWaypointTime = 6f;
-    [SerializeField, Range(0f, 1f)] float chanceToSkipWaitAtWaypoint = 0.25f; // 1/4 de probabilidad
+    [SerializeField, Range(0f, 1f)] float chanceToSkipWaitAtWaypoint = 0.25f;
     bool isWaitingAtWaypoint;
     float waitTimer;
 
@@ -53,8 +54,8 @@ public class EnemyAIBase : MonoBehaviour
     [SerializeField] bool targetInAttackRange;
 
     [Header("Movement Speed")]
-    [SerializeField] float patrolSpeed = 1.5f;   // antes 2f
-    [SerializeField] float chaseSpeed = 2.2f;    // antes 3.2f
+    [SerializeField] float patrolSpeed = 1.5f;
+    [SerializeField] float chaseSpeed = 2.2f;
 
     [Header("Stuck Detection")]
     [SerializeField] float stuckCheckTime = 2f;
@@ -72,6 +73,7 @@ public class EnemyAIBase : MonoBehaviour
         if (playerObj != null) target = playerObj.transform;
 
         agent = GetComponent<NavMeshAgent>();
+        anim = GetComponentInChildren<Animator>();
         lastPosition = transform.position;
         lastCheckTime = Time.time;
     }
@@ -108,10 +110,12 @@ public class EnemyAIBase : MonoBehaviour
         {
             targetInAttackRange = false;
             isWaitingBeforeChase = false;
+            chaseDelayTimer = 0f;
         }
 
         if (!targetInSightRange && !targetInAttackRange)
         {
+            UpdateAnimatorStates(true, false);
             Patroling();
         }
         else if (targetInSightRange && !targetInAttackRange)
@@ -120,6 +124,7 @@ public class EnemyAIBase : MonoBehaviour
         }
         else if (targetInSightRange && targetInAttackRange)
         {
+            UpdateAnimatorStates(false, false);
             AttackTarget();
         }
     }
@@ -162,6 +167,8 @@ public class EnemyAIBase : MonoBehaviour
 
         if (isWaitingAtWaypoint)
         {
+            UpdateAnimatorStates(false, false); 
+
             waitTimer -= Time.deltaTime;
 
             if (waitTimer <= 0f)
@@ -237,6 +244,14 @@ public class EnemyAIBase : MonoBehaviour
         currentWaypointIndex = newIndex;
     }
 
+    void UpdateAnimatorStates(bool patrolling, bool chasing)
+    {
+        if (anim == null) return;
+
+        anim.SetBool("isPatrolling", patrolling);
+        anim.SetBool("isChasing", chasing);
+    }
+
     void SearchWalkPoint()
     {
         int attempts = 0;
@@ -265,22 +280,28 @@ public class EnemyAIBase : MonoBehaviour
 
         agent.speed = chaseSpeed;
 
+        // Primera detección: se queda quieto en Idle y empieza la pausa
         if (!isWaitingBeforeChase)
         {
             isWaitingBeforeChase = true;
             chaseDelayTimer = Random.Range(minChaseDelay, maxChaseDelay);
 
             agent.ResetPath();
+            UpdateAnimatorStates(false, false);
             return;
         }
 
+        // Mientras espera: sigue quieto en Idle
         if (chaseDelayTimer > 0f)
         {
             chaseDelayTimer -= Time.deltaTime;
             agent.ResetPath();
+            UpdateAnimatorStates(false, false);
             return;
         }
 
+        // Cuando termina la pausa: empieza a perseguir
+        UpdateAnimatorStates(false, true);
         agent.SetDestination(target.position);
     }
 
@@ -301,6 +322,11 @@ public class EnemyAIBase : MonoBehaviour
 
         if (!alreadyAttacked)
         {
+            if (anim != null)
+            {
+                anim.SetTrigger("Shot");
+            }
+
             Rigidbody rb = Instantiate(projectile, shootPoint.position, Quaternion.identity).GetComponent<Rigidbody>();
             rb.AddForce(transform.forward * shootSpeedZ + transform.up * shootSpeedY, ForceMode.Impulse);
 
@@ -334,9 +360,15 @@ public class EnemyAIBase : MonoBehaviour
             if (stuckTimer >= maxStuckDuration)
             {
                 walkPointSet = false;
-                isWaitingAtWaypoint = false;
+                isWaitingAtWaypoint = true; 
+                waitTimer = Random.Range(minWaitAtWaypointTime, maxWaitAtWaypointTime);
+
                 isWaitingBeforeChase = false;
+                chaseDelayTimer = 0f;
+
                 agent.ResetPath();
+                UpdateAnimatorStates(false, false); 
+
                 stuckTimer = 0;
             }
 
