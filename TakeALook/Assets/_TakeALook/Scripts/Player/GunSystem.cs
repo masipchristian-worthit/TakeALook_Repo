@@ -1,6 +1,7 @@
 using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using DG.Tweening; // REQUISITO ABSOLUTO: Asegúrate de tener DOTween importado y configurado en tu proyecto.
 
 public class GunSystem : MonoBehaviour
 {
@@ -33,10 +34,23 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private bool _isReloading;
     [SerializeField] private bool _isGunDrawn;
 
-    // NUEVO BLOQUE: Parámetros de anulación de rendimiento del Animator
+    // Parámetros de anulación de rendimiento del Animator
     [Header("Animation Performance Overrides")]
     [Tooltip("Multiplicador global para acelerar forzosamente las animaciones del Animator. 1 = Normal, 2 = Doble de rápido.")]
     [SerializeField] private float globalAnimationSpeedMultiplier = 1.0f;
+
+    // Reversión controlada del disparo rápido
+    [Tooltip("Si es verdadero, permite disparar más rápido que la animación, interrumpiéndola. Si es falso, bloquea el disparo hasta que termine la animación visual.")]
+    [SerializeField] private bool allowRapidFireOverlap = true;
+
+    // NUEVO SUBSISTEMA: Control Fotométrico (Linterna)
+    [Header("Flashlight System")]
+    [SerializeField] private Light flashlight;
+    [SerializeField] private float maxFlashlightIntensity = 5f;
+    [SerializeField] private float flashlightTransitionTime = 0.8f;
+    [Range(0f, 1f)]
+    [Tooltip("Control paramétrico del ruido visual: 0 = Transición suave, 1 = Parpadeo caótico severo.")]
+    [SerializeField] private float flashlightFlickerAmount = 0.5f;
     #endregion
 
     #region Data Structures
@@ -61,11 +75,13 @@ public class GunSystem : MonoBehaviour
     private bool _canReload = true;
     private RaycastHit _hit;
 
-    // Control para evitar spam en el bypass de hardware
     private bool _hardwareBypassPressedThisFrame = false;
-
-    // NUEVA VARIABLE: Herramienta de diagnóstico de precisión
     private System.Diagnostics.Stopwatch _latencyStopwatch = new System.Diagnostics.Stopwatch();
+    private bool _masterActionLock = false;
+
+    // Variables internas del subsistema de linterna
+    private bool _isFlashlightOn = false;
+    private Tween _flashlightTween;
 
     private void Awake()
     {
@@ -73,52 +89,52 @@ public class GunSystem : MonoBehaviour
         _isTransitioning = false;
         _isShooting = false;
         _isReloading = false;
+        _masterActionLock = false;
+        _isFlashlightOn = false; // Estado base inerte
 
-        // Failsafe para evitar el bloqueo por cargador vacío
         if (wolfStats.magCapacity <= 0) { wolfStats.magCapacity = 30; wolfStats.currentMag = 30; wolfStats.reserveAmmo = 90; wolfStats.damage = 10; wolfStats.range = 100f; }
         if (bullStats.magCapacity <= 0) { bullStats.magCapacity = 30; bullStats.currentMag = 30; bullStats.reserveAmmo = 90; bullStats.damage = 15; bullStats.range = 100f; }
         if (eagleStats.magCapacity <= 0) { eagleStats.magCapacity = 30; eagleStats.currentMag = 30; eagleStats.reserveAmmo = 90; eagleStats.damage = 20; eagleStats.range = 100f; }
 
-        // DEBUG: Balas infinitas temporales para testear
         wolfStats.currentMag = wolfStats.magCapacity;
         wolfStats.reserveAmmo = 99;
-
         bullStats.currentMag = bullStats.magCapacity;
         bullStats.reserveAmmo = 99;
-
         eagleStats.currentMag = eagleStats.magCapacity;
         eagleStats.reserveAmmo = 99;
 
         UpdateActiveStats();
 
-        // Telemetría de inicialización
+        // Seguro para la linterna al inicio
+        if (flashlight != null)
+        {
+            flashlight.intensity = 0f;
+            flashlight.gameObject.SetActive(false);
+        }
+
         Debug.Log("[GunSystem - Awake] Estado inicializado correctamente. Munición asegurada.");
     }
 
     private void Start()
     {
-        // Obligamos a empezar con los brazos apagados de forma segura
         if (arms != null) arms.SetActive(false);
 
-        // Inyectamos el multiplicador de velocidad si hay un animator
         if (anim != null)
         {
             anim.speed = globalAnimationSpeedMultiplier;
             Debug.Log($"[GunSystem - Start] Velocidad global del Animator configurada a: {globalAnimationSpeedMultiplier}x");
         }
 
-        // Telemetría de arranque
         Debug.Log("[GunSystem - Start] Brazos desactivados por seguridad.");
     }
 
     private void Update()
     {
-        if (_isGunDrawn && !_isShooting && !_isReloading && _canSwap)
+        if (_isGunDrawn && !_isShooting && !_isReloading && _canSwap && !_masterActionLock)
         {
             HandleScrollInput();
         }
 
-        // Bypass de Hardware Crudo (Derivación del Input System)
         if (Keyboard.current != null)
         {
             if (Keyboard.current.tabKey.wasPressedThisFrame || Keyboard.current.digit1Key.wasPressedThisFrame)
@@ -128,14 +144,14 @@ public class GunSystem : MonoBehaviour
                     _hardwareBypassPressedThisFrame = true;
                     Debug.LogWarning("[GunSystem - Hardware Bypass] Tecla TAB o 1 pulsada directamente. Evadiendo el sistema de eventos de Unity.");
 
-                    if (!_isTransitioning)
+                    if (!_isTransitioning && !_isShooting && !_isReloading && !_masterActionLock)
                     {
                         if (!_isGunDrawn) StartCoroutine(DrawWeaponRoutine());
                         else StartCoroutine(SheathWeaponRoutine());
                     }
                     else
                     {
-                        Debug.LogWarning("[GunSystem - Hardware Bypass] Ignorado: El arma ya está en plena transición.");
+                        Debug.LogWarning($"[GunSystem - Hardware Bypass] ACCIÓN DENEGADA. Razones -> Transitioning: {_isTransitioning} | Shooting: {_isShooting} | Reloading: {_isReloading} | MasterLock: {_masterActionLock}");
                     }
                 }
             }
@@ -203,14 +219,14 @@ public class GunSystem : MonoBehaviour
     #region Input Methods
     public void OnDrawn(InputAction.CallbackContext context)
     {
-        _latencyStopwatch.Restart(); // Iniciamos medición de latencia
+        _latencyStopwatch.Restart();
         Debug.Log($"[GunSystem - OnDrawn] Señal de Input detectada. Fase actual: {context.phase}");
 
         if (!context.performed) return;
 
-        if (_isShooting || _isReloading || _isTransitioning)
+        if (_isShooting || _isReloading || _isTransitioning || _masterActionLock)
         {
-            Debug.LogWarning("Draw bloqueado. Ocupado en otra acción.");
+            Debug.LogWarning($"[GunSystem - OnDrawn] Draw/Sheath bloqueado por seguridad. Ocupado en otra acción. (Lock: {_masterActionLock})");
             return;
         }
 
@@ -225,9 +241,9 @@ public class GunSystem : MonoBehaviour
         _latencyStopwatch.Restart();
         Debug.Log($"[GunSystem - OnShoot] Señal detectada. Fase: {context.phase}");
 
-        if (!context.performed || !_isGunDrawn || !_canShoot || _isReloading || _isTransitioning)
+        if (!context.performed || !_isGunDrawn || !_canShoot || _isReloading || _isTransitioning || _masterActionLock)
         {
-            if (context.performed) Debug.LogWarning($"[GunSystem - OnShoot] Disparo bloqueado. Drawn:{_isGunDrawn}, CanShoot:{_canShoot}, Reloading:{_isReloading}, Transitioning:{_isTransitioning}");
+            if (context.performed) Debug.LogWarning($"[GunSystem - OnShoot] Disparo bloqueado. Drawn:{_isGunDrawn}, CanShoot:{_canShoot}, Reloading:{_isReloading}, Transitioning:{_isTransitioning}, Lock:{_masterActionLock}");
             return;
         }
 
@@ -246,7 +262,7 @@ public class GunSystem : MonoBehaviour
     {
         Debug.Log($"[GunSystem - OnReload] Señal detectada. Fase: {context.phase}");
 
-        if (!context.performed || !_isGunDrawn || _isReloading || _isShooting || _isTransitioning) return;
+        if (!context.performed || !_isGunDrawn || _isReloading || _isShooting || _isTransitioning || _masterActionLock) return;
 
         bool needsReload = _activeStats.currentMag < _activeStats.magCapacity;
         bool hasReserveAmmo = _activeStats.reserveAmmo > 0;
@@ -261,7 +277,7 @@ public class GunSystem : MonoBehaviour
     {
         Debug.Log($"[GunSystem - OnInspect] Señal detectada. Fase: {context.phase}");
 
-        if (context.performed && _isGunDrawn && !_isShooting && !_isReloading && !_isTransitioning)
+        if (context.performed && _isGunDrawn && !_isShooting && !_isReloading && !_isTransitioning && !_masterActionLock)
         {
             if (anim != null)
             {
@@ -271,16 +287,99 @@ public class GunSystem : MonoBehaviour
             }
         }
     }
+
+    // NUEVO MÉTODO: Receptor del Player Input para la linterna
+    public void OnFlashlight(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+
+        if (flashlight == null)
+        {
+            Debug.LogWarning("[GunSystem - Flashlight] REFERENCIA NULA: No hay luz asignada en el inspector para ejecutar la acción.");
+            return;
+        }
+
+        _isFlashlightOn = !_isFlashlightOn;
+        Debug.Log($"[GunSystem - Flashlight] Señal detectada. Estado objetivo: {_isFlashlightOn}. Ejecutando interpolación paramétrica.");
+
+        // Anulamos de forma segura cualquier interpolación activa para evitar conflictos de sobre-escritura
+        _flashlightTween?.Kill();
+
+        if (_isFlashlightOn)
+        {
+            flashlight.gameObject.SetActive(true);
+
+            // Interpolación virtual: Calculamos el valor y lo aplicamos manualmente para inyectarle el ruido (flicker)
+            _flashlightTween = DOVirtual.Float(flashlight.intensity, maxFlashlightIntensity, flashlightTransitionTime, (val) =>
+            {
+                if (flashlightFlickerAmount > 0f)
+                {
+                    // La probabilidad de que haya un micro-corte se basa en el slider
+                    bool shouldFlicker = Random.value < (flashlightFlickerAmount * 0.4f);
+                    if (shouldFlicker)
+                    {
+                        // Ruido matemático: cae la intensidad de golpe
+                        flashlight.intensity = val * Random.Range(0f, 0.3f);
+                    }
+                    else
+                    {
+                        flashlight.intensity = val;
+                    }
+                }
+                else
+                {
+                    flashlight.intensity = val;
+                }
+            })
+            .SetEase(Ease.OutQuad) // Curva de aceleración inicial
+            .OnComplete(() =>
+            {
+                flashlight.intensity = maxFlashlightIntensity; // Estabilización final garantizada
+                Debug.Log("[GunSystem - Flashlight] Ciclo de encendido finalizado.");
+            });
+        }
+        else
+        {
+            _flashlightTween = DOVirtual.Float(flashlight.intensity, 0f, flashlightTransitionTime, (val) =>
+            {
+                if (flashlightFlickerAmount > 0f)
+                {
+                    bool shouldSpike = Random.value < (flashlightFlickerAmount * 0.4f);
+                    if (shouldSpike)
+                    {
+                        // Ruido inverso: pega picos de luz antes de apagarse del todo
+                        flashlight.intensity = val + Random.Range(0f, maxFlashlightIntensity * 0.6f);
+                    }
+                    else
+                    {
+                        flashlight.intensity = val;
+                    }
+                }
+                else
+                {
+                    flashlight.intensity = val;
+                }
+            })
+            .SetEase(Ease.InQuad) // Curva de deceleración final
+            .OnComplete(() =>
+            {
+                flashlight.intensity = 0f;
+                flashlight.gameObject.SetActive(false); // Apagado físico del GameObject
+                Debug.Log("[GunSystem - Flashlight] Ciclo de apagado finalizado.");
+            });
+        }
+    }
     #endregion
 
     #region Coroutines & Logic
     private IEnumerator DrawWeaponRoutine()
     {
-        _latencyStopwatch.Restart(); // Reiniciamos para medir tiempo de la malla
+        _latencyStopwatch.Restart();
         Debug.Log("[GunSystem] Iniciando DrawWeaponRoutine...");
 
         _isTransitioning = true;
         _isGunDrawn = true;
+        _masterActionLock = true;
 
         if (arms != null)
         {
@@ -289,24 +388,19 @@ public class GunSystem : MonoBehaviour
         }
         else Debug.LogError("[GunSystem] REFERENCIA NULA: 'arms' no está asignado en el Inspector.");
 
-        // Pausa obligatoria de 1 frame para que el Animator complete su secuencia de inicialización
         yield return null;
 
         if (anim != null)
         {
             if (anim.isActiveAndEnabled)
             {
-                // Aseguramos que la velocidad es la correcta por si otro script la modificó
                 anim.speed = globalAnimationSpeedMultiplier;
 
                 anim.ResetTrigger("Draw");
                 anim.SetFloat("DrawSpeed", 1f);
                 anim.SetTrigger("Draw");
 
-                // Fuerza al Animator a actualizar su estado en este exacto milisegundo.
-                anim.Update(0f);
-
-                Debug.Log($"[GunSystem] Señal enviada al Animator tras {_latencyStopwatch.ElapsedMilliseconds} ms desde inicio de corrutina. Si hay lag, es culpa del Transition Duration en el Animator.");
+                Debug.Log($"[GunSystem] Señal enviada al Animator tras {_latencyStopwatch.ElapsedMilliseconds} ms. Sacando arma de forma fluida.");
             }
             else
             {
@@ -315,12 +409,23 @@ public class GunSystem : MonoBehaviour
         }
         else Debug.LogError("[GunSystem] REFERENCIA NULA: 'anim' no está asignado en el Inspector.");
 
-        yield return new WaitForSeconds(drawCooldown);
+        float actualDrawWait = Mathf.Max(drawCooldown, 0.1f);
+        yield return new WaitForSeconds(actualDrawWait);
+
+        // NUEVAS LÍNEAS DE RESOLUCIÓN: El Cierre de Ciclo para el Draw Positivo.
+        // Liberamos al Animator de la espera para que retorne a Walk/Idle inmediatamente.
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.ResetTrigger("SheathComplete");
+            anim.SetTrigger("SheathComplete");
+            Debug.Log("[GunSystem] Trigger 'SheathComplete' inyectado en desenfundado positivo. Animator liberado para transición a Idle.");
+        }
 
         _canShoot = true;
         _canSwap = true;
         _canReload = true;
         _isTransitioning = false;
+        _masterActionLock = false;
 
         Debug.Log("[GunSystem] DrawWeaponRoutine finalizada con éxito.");
     }
@@ -334,29 +439,55 @@ public class GunSystem : MonoBehaviour
         _canShoot = false;
         _canSwap = false;
         _canReload = false;
+        _masterActionLock = true;
+
+        float actualSheathWait = drawCooldown;
 
         if (anim != null)
         {
             if (anim.isActiveAndEnabled)
             {
-                anim.speed = globalAnimationSpeedMultiplier; // Reforzar velocidad
+                anim.speed = globalAnimationSpeedMultiplier;
                 anim.ResetTrigger("Draw");
                 anim.SetFloat("DrawSpeed", -1f);
                 anim.SetTrigger("Draw");
-                Debug.Log($"[GunSystem] Parámetros de guardado enviados al Animator en {_latencyStopwatch.ElapsedMilliseconds} ms.");
+
+                yield return null;
+
+                AnimatorStateInfo currentState = anim.GetCurrentAnimatorStateInfo(0);
+                AnimatorStateInfo nextState = anim.GetNextAnimatorStateInfo(0);
+
+                int targetStateHash = nextState.fullPathHash != 0 ? nextState.fullPathHash : currentState.fullPathHash;
+                float stateLength = nextState.fullPathHash != 0 ? nextState.length : currentState.length;
+
+                anim.Play(targetStateHash, 0, 1.0f);
+
+                if (stateLength > 0.05f)
+                {
+                    actualSheathWait = stateLength / (globalAnimationSpeedMultiplier > 0 ? globalAnimationSpeedMultiplier : 1f);
+                    Debug.Log($"[GunSystem - SheathLock] Tiempo ajustado dinámicamente a {actualSheathWait}s exactos para cuadrar con el final de la animación visual.");
+                }
             }
         }
 
-        yield return new WaitForSeconds(drawCooldown);
+        yield return new WaitForSeconds(actualSheathWait);
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.ResetTrigger("SheathComplete");
+            anim.SetTrigger("SheathComplete");
+            Debug.Log("[GunSystem] Trigger 'SheathComplete' inyectado en ciclo inverso. Autorizando retorno a Idle.");
+        }
 
         if (arms != null)
         {
             arms.SetActive(false);
-            Debug.Log("[GunSystem] GameObject 'arms' apagado.");
+            Debug.Log("[GunSystem] GameObject 'arms' apagado tras completar el ciclo inverso.");
         }
 
         _isGunDrawn = false;
         _isTransitioning = false;
+        _masterActionLock = false;
 
         Debug.Log("[GunSystem] SheathWeaponRoutine finalizada con éxito.");
     }
@@ -365,45 +496,73 @@ public class GunSystem : MonoBehaviour
     {
         _isShooting = true;
         _canShoot = false;
+        _masterActionLock = true;
 
         ExecuteRaycast();
         _activeStats.currentMag--;
         SaveActiveStats();
 
+        float dynamicCooldown = _activeStats.shootingCooldown;
+
         if (anim != null)
         {
             if (anim.isActiveAndEnabled)
             {
-                anim.speed = globalAnimationSpeedMultiplier; // Reforzar velocidad
+                anim.speed = globalAnimationSpeedMultiplier;
                 anim.ResetTrigger("Fire");
                 anim.SetTrigger("Fire");
+                anim.Update(0f);
                 Debug.Log("[GunSystem] Trigger 'Fire' enviado al Animator.");
+
+                if (!allowRapidFireOverlap)
+                {
+                    AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+                    if (stateInfo.length > _activeStats.shootingCooldown)
+                    {
+                        dynamicCooldown = stateInfo.length / (globalAnimationSpeedMultiplier > 0 ? globalAnimationSpeedMultiplier : 1f);
+                        Debug.Log($"[GunSystem - ShootLock] Cooldown ajustado a {dynamicCooldown}s. (Rapid Fire desactivado).");
+                    }
+                }
+                else
+                {
+                    Debug.Log($"[GunSystem - ShootLock] Rapid Fire Activo: Priorizando el cooldown lógico de {_activeStats.shootingCooldown}s sobre la longitud visual.");
+                }
             }
         }
 
-        yield return new WaitForSeconds(_activeStats.shootingCooldown);
+        yield return new WaitForSeconds(dynamicCooldown);
 
         _isShooting = false;
         _canShoot = true;
+        _masterActionLock = false;
     }
 
     private IEnumerator ReloadRoutine()
     {
         _isReloading = true;
         _canShoot = false;
+        _masterActionLock = true;
 
         if (anim != null)
         {
             if (anim.isActiveAndEnabled)
             {
-                anim.speed = globalAnimationSpeedMultiplier; // Reforzar velocidad
+                anim.speed = globalAnimationSpeedMultiplier;
                 anim.ResetTrigger("Reload");
                 anim.SetTrigger("Reload");
+                anim.Update(0f);
                 Debug.Log("[GunSystem] Trigger 'Reload' enviado al Animator.");
             }
         }
 
-        yield return new WaitForSeconds(reloadTime);
+        float currentReloadTime = reloadTime;
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+            if (stateInfo.length > reloadTime) currentReloadTime = stateInfo.length / (globalAnimationSpeedMultiplier > 0 ? globalAnimationSpeedMultiplier : 1f);
+        }
+
+        yield return new WaitForSeconds(currentReloadTime);
 
         int bulletsNeeded = _activeStats.magCapacity - _activeStats.currentMag;
         int bulletsToReload = Mathf.Min(bulletsNeeded, _activeStats.reserveAmmo);
@@ -414,6 +573,7 @@ public class GunSystem : MonoBehaviour
 
         _isReloading = false;
         _canShoot = true;
+        _masterActionLock = false;
     }
 
     private void ExecuteRaycast()
@@ -484,6 +644,7 @@ public class GunSystem : MonoBehaviour
         _canShoot = true;
         _canSwap = true;
         _canReload = true;
+        _masterActionLock = false;
         Debug.Log("[DevTool] Todos los booleanos de estado han sido reiniciados a sus valores por defecto.");
     }
     #endregion
