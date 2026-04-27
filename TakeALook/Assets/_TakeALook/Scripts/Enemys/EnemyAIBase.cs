@@ -35,16 +35,15 @@ public class EnemyAIBase : MonoBehaviour
     float chaseDelayTimer;
 
     [Header("Attacking Stats")]
-    [SerializeField] float timeBetweenAttacks = 1f;
+    [SerializeField] float minTimeBetweenAttacks = 2f;
+    [SerializeField] float maxTimeBetweenAttacks = 4f;
     [SerializeField] GameObject projectile;
     [SerializeField] Transform shootPoint;
-    [SerializeField] float shootSpeedY;
-    [SerializeField] float shootSpeedZ = 10f;
+    [SerializeField] float shootSpeed = 2.5f;
     bool alreadyAttacked;
 
-    [Header("Vision Cone")]
+    [Header("Detection Aura")]
     [SerializeField] float sightRange = 8f;
-    [SerializeField, Range(0f, 360f)] float sightAngle = 90f;
     [SerializeField] float eyeHeight = 1.5f;
     [SerializeField] Color visionGizmoColor = new Color(1f, 0f, 0f, 0.25f);
 
@@ -54,8 +53,8 @@ public class EnemyAIBase : MonoBehaviour
     [SerializeField] bool targetInAttackRange;
 
     [Header("Movement Speed")]
-    [SerializeField] float patrolSpeed = 1.5f;
-    [SerializeField] float chaseSpeed = 2.2f;
+    [SerializeField] float patrolSpeed = 0.5f;
+    [SerializeField] float chaseSpeed = 1.0f;
 
     [Header("Stuck Detection")]
     [SerializeField] float stuckCheckTime = 2f;
@@ -134,29 +133,16 @@ public class EnemyAIBase : MonoBehaviour
         if (target == null) return false;
 
         Vector3 origin = transform.position + Vector3.up * eyeHeight;
-        Vector3 targetPos = target.position;
 
         Collider[] hits = Physics.OverlapSphere(origin, sightRange, targetLayer);
-        bool targetInsideRange = false;
 
         for (int i = 0; i < hits.Length; i++)
         {
             if (hits[i].transform == target)
-            {
-                targetInsideRange = true;
-                break;
-            }
+                return true;
         }
 
-        if (!targetInsideRange) return false;
-
-        Vector3 directionToTarget = (targetPos - origin).normalized;
-        float angleToTarget = Vector3.Angle(transform.forward, directionToTarget);
-
-        if (angleToTarget > sightAngle * 0.5f)
-            return false;
-
-        return true;
+        return false;
     }
 
     void Patroling()
@@ -167,7 +153,7 @@ public class EnemyAIBase : MonoBehaviour
 
         if (isWaitingAtWaypoint)
         {
-            UpdateAnimatorStates(false, false); 
+            UpdateAnimatorStates(false, false);
 
             waitTimer -= Time.deltaTime;
 
@@ -244,12 +230,13 @@ public class EnemyAIBase : MonoBehaviour
         currentWaypointIndex = newIndex;
     }
 
-    void UpdateAnimatorStates(bool patrolling, bool chasing)
+    void UpdateAnimatorStates(bool patrolling, bool chasing, bool attacking = false)
     {
         if (anim == null) return;
 
         anim.SetBool("isPatrolling", patrolling);
         anim.SetBool("isChasing", chasing);
+        anim.SetBool("IsAttacking", attacking);
     }
 
     void SearchWalkPoint()
@@ -300,9 +287,10 @@ public class EnemyAIBase : MonoBehaviour
             return;
         }
 
-        // Cuando termina la pausa: empieza a perseguir
+        // Cuando termina la pausa: persigue y dispara
         UpdateAnimatorStates(false, true);
         agent.SetDestination(target.position);
+        TryShoot();
     }
 
     void AttackTarget()
@@ -320,24 +308,30 @@ public class EnemyAIBase : MonoBehaviour
             transform.rotation = Quaternion.RotateTowards(transform.rotation, lookRotation, agent.angularSpeed * Time.deltaTime);
         }
 
-        if (!alreadyAttacked)
-        {
-            if (anim != null)
-            {
-                anim.SetTrigger("Shot");
-            }
+        TryShoot();
+    }
 
-            Rigidbody rb = Instantiate(projectile, shootPoint.position, Quaternion.identity).GetComponent<Rigidbody>();
-            rb.AddForce(transform.forward * shootSpeedZ + transform.up * shootSpeedY, ForceMode.Impulse);
+    void TryShoot()
+    {
+        if (alreadyAttacked) return;
 
-            alreadyAttacked = true;
-            Invoke(nameof(ResetAttack), timeBetweenAttacks);
-        }
+        UpdateAnimatorStates(false, false, true);
+
+        Vector3 targetCenter = target.position + Vector3.up * 1f;
+        Vector3 shootDir = (targetCenter - shootPoint.position).normalized;
+
+        Rigidbody rb = Instantiate(projectile, shootPoint.position, Quaternion.identity).GetComponent<Rigidbody>();
+        rb.AddForce(shootDir * shootSpeed, ForceMode.Impulse);
+
+        alreadyAttacked = true;
+        float cooldown = Random.Range(minTimeBetweenAttacks, maxTimeBetweenAttacks);
+        Invoke(nameof(ResetAttack), cooldown);
     }
 
     void ResetAttack()
     {
         alreadyAttacked = false;
+        UpdateAnimatorStates(false, false, false);
     }
 
     void CheckIfStuck()
@@ -360,14 +354,14 @@ public class EnemyAIBase : MonoBehaviour
             if (stuckTimer >= maxStuckDuration)
             {
                 walkPointSet = false;
-                isWaitingAtWaypoint = true; 
+                isWaitingAtWaypoint = true;
                 waitTimer = Random.Range(minWaitAtWaypointTime, maxWaitAtWaypointTime);
 
                 isWaitingBeforeChase = false;
                 chaseDelayTimer = 0f;
 
                 agent.ResetPath();
-                UpdateAnimatorStates(false, false); 
+                UpdateAnimatorStates(false, false);
 
                 stuckTimer = 0;
             }
@@ -386,32 +380,6 @@ public class EnemyAIBase : MonoBehaviour
 
         Gizmos.color = visionGizmoColor;
         Gizmos.DrawSphere(origin, 0.08f);
-
-        Vector3 leftBoundary = DirFromAngle(-sightAngle * 0.5f);
-        Vector3 rightBoundary = DirFromAngle(sightAngle * 0.5f);
-
-        Gizmos.DrawRay(origin, leftBoundary * sightRange);
-        Gizmos.DrawRay(origin, rightBoundary * sightRange);
-        Gizmos.DrawRay(origin, transform.forward * sightRange);
-
-        int segments = 30;
-        Vector3 previousPoint = origin + DirFromAngle(-sightAngle * 0.5f) * sightRange;
-
-        for (int i = 1; i <= segments; i++)
-        {
-            float currentAngle = Mathf.Lerp(-sightAngle * 0.5f, sightAngle * 0.5f, i / (float)segments);
-            Vector3 nextPoint = origin + DirFromAngle(currentAngle) * sightRange;
-
-            Gizmos.DrawLine(origin, nextPoint);
-            Gizmos.DrawLine(previousPoint, nextPoint);
-
-            previousPoint = nextPoint;
-        }
-    }
-
-    Vector3 DirFromAngle(float angleInDegrees)
-    {
-        float totalAngle = transform.eulerAngles.y + angleInDegrees;
-        return new Vector3(Mathf.Sin(totalAngle * Mathf.Deg2Rad), 0f, Mathf.Cos(totalAngle * Mathf.Deg2Rad));
+        Gizmos.DrawWireSphere(origin, sightRange);
     }
 }
