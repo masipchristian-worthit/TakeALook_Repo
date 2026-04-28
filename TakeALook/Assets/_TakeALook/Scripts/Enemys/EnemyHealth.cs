@@ -2,45 +2,86 @@ using UnityEngine;
 
 public class EnemyHealth : MonoBehaviour
 {
+    [Header("Salud")]
+    [SerializeField] int maxHealth = 100;
 
-    [Header("Health System Configuration")]
-    [SerializeField] int health; //Vida actual del enemigo
-    [SerializeField] int maxHealth; //Vida máxima del enemigo
+    [Header("Feedback Visual")]
+    [SerializeField] Material damagedMat;
+    [SerializeField] MeshRenderer enemyRend;
+    [SerializeField] GameObject deathVfx;
 
-    [Header("Feedback Configuration")]
-    [SerializeField] Material damagedMat; //Ref al material que da Feedback de dañado
-    [SerializeField] MeshRenderer enemyRend; //Ref al renderer del modelo del enemigo
-    [SerializeField] GameObject deathVfx; //Ref al sistema de partículas de muerte
-    Material baseMat; //Ref al material base del modelo del enemigo
+    [Header("VFX de Impacto (salpicadura de sangre)")]
+    [Tooltip("Prefab de partÃ­culas que se instancia en el punto de impacto del raycast.")]
+    [SerializeField] GameObject bloodSplatterPrefab;
+
+    [Header("Stun - Bala Bull")]
+    [SerializeField] float bullStunDuration = 2f;
+    [Tooltip("Referencia al componente EnemyAIBase del mismo GameObject.")]
+    [SerializeField] EnemyAIBase aiBase;
+
+    private int _health;
+    private Material _baseMat;
+    private bool _isDead;
 
     private void Awake()
     {
-        health = maxHealth; //Cuando se genera el enemigo su vida actual se carga a la máxima
-        baseMat = enemyRend.material; //Se almacena el material base del modelo del enemigo
+        _health = maxHealth;
+        if (enemyRend != null) _baseMat = enemyRend.material;
+        if (aiBase == null) aiBase = GetComponent<EnemyAIBase>();
     }
 
-    // Update is called once per frame
-    void Update()
+    /// <summary>
+    /// Aplica daÃ±o al enemigo.
+    /// Llamado desde GunSystem.ExecuteRaycast con tipo de bala y datos de impacto.
+    /// </summary>
+    public void TakeDamage(int damage,
+                           GunSystem.BulletType bulletType = GunSystem.BulletType.Wolf,
+                           Vector3 hitPoint = default,
+                           Vector3 hitNormal = default)
     {
-        if (health <= 0)
+        if (_isDead) return;
+
+        _health -= damage;
+
+        // Salpicadura de sangre en el punto de impacto
+        if (bloodSplatterPrefab != null && hitNormal != Vector3.zero)
         {
-            health = 0; //La vida no puede bajar de 0
-            deathVfx.SetActive(true); //Encendemos el VFX de muerte
-            deathVfx.transform.position = transform.position; //Ponemos el vfx en la posición del enemigo
-            gameObject.SetActive(false); //Se apaga el enemigo = "muere"
+            var vfx = Instantiate(bloodSplatterPrefab, hitPoint,
+                Quaternion.LookRotation(hitNormal));
+            Destroy(vfx, 5f);
         }
+
+        // Bala Bull: stun al enemigo
+        if (bulletType == GunSystem.BulletType.Bull && aiBase != null)
+            aiBase.Stun(bullStunDuration);
+
+        // Flash de material
+        if (enemyRend != null && damagedMat != null)
+        {
+            enemyRend.material = damagedMat;
+            Invoke(nameof(ResetMat), 0.1f);
+        }
+
+        if (_health <= 0) Die();
     }
 
-    public void TakeDamage(int damage)
+    private void Die()
     {
-        health -= damage; //Quitar tanta vida como valor de daño viene de fuera
-        enemyRend.material = damagedMat; //Se cambia temporalmente el material base por el material dañado
-        Invoke(nameof(ResetEnemyMat), 0.1f); //Llamar al reseteo del material con 0.1 segundos de espera
+        if (_isDead) return;
+        _isDead = true;
+
+        if (deathVfx != null)
+        {
+            deathVfx.SetActive(true);
+            deathVfx.transform.position = transform.position;
+        }
+
+        gameObject.SetActive(false);
     }
 
-    void ResetEnemyMat()
+    private void ResetMat()
     {
-        enemyRend.material = baseMat; //Cambiar el material del modelo al material base
+        if (enemyRend != null && _baseMat != null)
+            enemyRend.material = _baseMat;
     }
-
 }

@@ -1,44 +1,50 @@
 using UnityEngine;
 using System.Collections.Generic;
 
+/// <summary>
+/// Detecta colisiones del sistema de partículas de sangre con el suelo
+/// y crea/hace crecer charcos (BloodPuddle).
+/// Usa OverlapSphereNonAlloc para evitar allocations por frame.
+/// </summary>
 public class BloodCollisionHandler : MonoBehaviour
 {
-    public GameObject puddlePrefab;
-    public float detectionRadius = 0.7f;
-    public float groundYThreshold = 0.5f; //detectar el suelo
+    [SerializeField] GameObject puddlePrefab;
+    [SerializeField] float detectionRadius = 0.7f;
+    [Tooltip("Umbral de altura para considerar que la partícula impactó en el suelo.")]
+    [SerializeField] float groundYThreshold = 0.5f;
 
-    private ParticleSystem part;
-    private List<ParticleCollisionEvent> collisionEvents = new List<ParticleCollisionEvent>();
+    private ParticleSystem _ps;
+    private readonly List<ParticleCollisionEvent> _events = new List<ParticleCollisionEvent>();
 
-    void Start() => part = GetComponent<ParticleSystem>();
+    // Buffer estático: evita alloc por cada OverlapSphere
+    private static readonly Collider[] _overlapBuffer = new Collider[8];
 
-    void OnParticleCollision(GameObject other)
+    private void Start() => _ps = GetComponent<ParticleSystem>();
+
+    private void OnParticleCollision(GameObject other)
     {
-        int numEvents = part.GetCollisionEvents(other, collisionEvents);
-        for (int i = 0; i < numEvents; i++)
+        int count = _ps.GetCollisionEvents(other, _events);
+        for (int i = 0; i < count; i++)
         {
-            Vector3 pos = collisionEvents[i].intersection;
-
-            // Si el impacto ocurre cerca de Y = 0
+            Vector3 pos = _events[i].intersection;
             if (Mathf.Abs(pos.y) <= groundYThreshold)
-            {
-                Debug.Log($"¡Colisión detectada en {pos}! Creando/Creciendo charco.");
                 HandlePuddle(new Vector3(pos.x, 0.02f, pos.z));
-            }
         }
     }
 
-    void HandlePuddle(Vector3 spawnPos)
+    private void HandlePuddle(Vector3 spawnPos)
     {
-        Collider[] closeBy = Physics.OverlapSphere(spawnPos, detectionRadius);
-        BloodPuddle existing = null;
-
-        foreach (var c in closeBy)
+        int found = Physics.OverlapSphereNonAlloc(spawnPos, detectionRadius, _overlapBuffer);
+        for (int i = 0; i < found; i++)
         {
-            if (c.TryGetComponent(out BloodPuddle p)) { existing = p; break; }
+            if (_overlapBuffer[i].TryGetComponent(out BloodPuddle puddle))
+            {
+                puddle.Grow();
+                return;
+            }
         }
 
-        if (existing != null) existing.Grow();
-        else Instantiate(puddlePrefab, spawnPos, Quaternion.Euler(-90, 0, 0));
+        // El quad por defecto de Unity está en XY, rotamos -90 en X para que quede horizontal
+        Instantiate(puddlePrefab, spawnPos, Quaternion.Euler(-90f, 0f, 0f));
     }
 }

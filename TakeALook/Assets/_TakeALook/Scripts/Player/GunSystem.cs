@@ -38,7 +38,7 @@ public class GunSystem : MonoBehaviour
     [Header("Animation Performance Overrides")]
     [Tooltip("Multiplicador global para acelerar las animaciones del Animator. 1 = Normal.")]
     [SerializeField] private float globalAnimationSpeedMultiplier = 1.0f;
-    [Tooltip("Permite disparar más rápido que la animación. Si false, el cooldown se ajusta a la duración visual.")]
+    [Tooltip("Permite disparar mÃ¡s rÃ¡pido que la animaciÃ³n. Si false, el cooldown se ajusta a la duraciÃ³n visual.")]
     [SerializeField] private bool allowRapidFireOverlap = true;
 
     [Header("Flashlight System")]
@@ -46,9 +46,9 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private float maxFlashlightIntensity = 5f;
     [SerializeField] private float flashlightTransitionTime = 0.8f;
     [Range(0f, 1f)]
-    [Tooltip("0 = Transición suave, 1 = Parpadeo caótico.")]
+    [Tooltip("0 = TransiciÃ³n suave, 1 = Parpadeo caÃ³tico.")]
     [SerializeField] private float flashlightFlickerAmount = 0.5f;
-    [Tooltip("Empezar la partida con la linterna desbloqueada (testing). Desactívalo en producción.")]
+    [Tooltip("Empezar la partida con la linterna desbloqueada (testing). DesactÃ­valo en producciÃ³n.")]
     [SerializeField] private bool startWithFlashlight = true;
 
     [Header("Audio IDs")]
@@ -88,10 +88,8 @@ public class GunSystem : MonoBehaviour
     private RaycastHit _hit;
     private bool _masterActionLock = false;
 
-    // Renderers cacheados para evitar parpadeo de malla en draw/sheath
     private Renderer[] _armsRenderers;
 
-    // Input buffer (rueda del ratón)
     private readonly Queue<int> _scrollBuffer = new Queue<int>();
     private float _nextSwapAllowedTime;
     private float _bufferLastEnqueueTime;
@@ -100,10 +98,20 @@ public class GunSystem : MonoBehaviour
     private bool _isFlashlightOn = false;
     private bool _hasFlashlight = false;
     private Tween _flashlightTween;
+
+    // Progress tracking para HUD
+    private float _reloadProgress = 1f;
+    private float _shootCooldownProgress = 1f;
+
+    // Public API
+    public BulletType CurrentBulletType => currentBullet;
+    public bool IsReloading => _isReloading;
+    public bool IsShooting => _isShooting;
+    public float ReloadProgress => _reloadProgress;
+    public float ShootCooldownProgress => _shootCooldownProgress;
+    public bool IsFlashlightOn => _isFlashlightOn;
     public bool HasFlashlight { get => _hasFlashlight; set => _hasFlashlight = value; }
 
-    // Public API para UI
-    public BulletType CurrentBulletType => currentBullet;
     public int GetMag(BulletType type) => GetStatsRef(type).currentMag;
     public int GetReserve(BulletType type) => GetStatsRef(type).reserveAmmo;
     public int GetMagCapacity(BulletType type) => GetStatsRef(type).magCapacity;
@@ -171,7 +179,7 @@ public class GunSystem : MonoBehaviour
         }
     }
 
-    #region Helpers - Renderers + Input Block
+    #region Helpers
     private void SetArmsRenderersEnabled(bool enabled)
     {
         if (_armsRenderers == null) return;
@@ -213,24 +221,15 @@ public class GunSystem : MonoBehaviour
         {
             case BulletType.Wolf:
                 if (wolfStats.reserveAmmo < wolfStats.maxReserveAmmo)
-                {
-                    wolfStats.reserveAmmo = Mathf.Min(wolfStats.reserveAmmo + amount, wolfStats.maxReserveAmmo);
-                    added = true;
-                }
+                { wolfStats.reserveAmmo = Mathf.Min(wolfStats.reserveAmmo + amount, wolfStats.maxReserveAmmo); added = true; }
                 break;
             case BulletType.Bull:
                 if (bullStats.reserveAmmo < bullStats.maxReserveAmmo)
-                {
-                    bullStats.reserveAmmo = Mathf.Min(bullStats.reserveAmmo + amount, bullStats.maxReserveAmmo);
-                    added = true;
-                }
+                { bullStats.reserveAmmo = Mathf.Min(bullStats.reserveAmmo + amount, bullStats.maxReserveAmmo); added = true; }
                 break;
             case BulletType.Eagle:
                 if (eagleStats.reserveAmmo < eagleStats.maxReserveAmmo)
-                {
-                    eagleStats.reserveAmmo = Mathf.Min(eagleStats.reserveAmmo + amount, eagleStats.maxReserveAmmo);
-                    added = true;
-                }
+                { eagleStats.reserveAmmo = Mathf.Min(eagleStats.reserveAmmo + amount, eagleStats.maxReserveAmmo); added = true; }
                 break;
         }
         if (type == currentBullet) UpdateActiveStats();
@@ -254,18 +253,14 @@ public class GunSystem : MonoBehaviour
         float scroll = Mouse.current.scroll.ReadValue().y;
         if (Mathf.Abs(scroll) > 0.1f)
         {
-            // Evitar enqueues múltiples por un mismo "tick" del scroll
             if (Time.time - _bufferLastEnqueueTime > 0.04f)
             {
                 _scrollBuffer.Enqueue(scroll > 0 ? 1 : -1);
                 _bufferLastEnqueueTime = Time.time;
-
-                // Limitar tamaño del buffer
                 while (_scrollBuffer.Count > 4) _scrollBuffer.Dequeue();
             }
         }
 
-        // Descartar buffer si la entrada es muy antigua
         if (_scrollBuffer.Count > 0 && Time.time - _bufferLastEnqueueTime > inputBufferWindow * 3f)
             _scrollBuffer.Clear();
     }
@@ -285,7 +280,6 @@ public class GunSystem : MonoBehaviour
     {
         if (!context.performed) return;
         if (IsInputBlocked()) return;
-
         if (_isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
 
         if (!_isGunDrawn) StartCoroutine(DrawWeaponRoutine());
@@ -299,13 +293,9 @@ public class GunSystem : MonoBehaviour
         if (!_isGunDrawn || !_canShoot || _isReloading || _isTransitioning || _masterActionLock) return;
 
         if (_activeStats.currentMag > 0)
-        {
             StartCoroutine(ShootRoutine());
-        }
         else
-        {
             AudioManager.Instance?.PlaySFX(emptySfxId, transform.position);
-        }
     }
 
     public void OnReload(InputAction.CallbackContext context)
@@ -374,10 +364,6 @@ public class GunSystem : MonoBehaviour
     #endregion
 
     #region Coroutines & Logic
-    /// <summary>
-    /// FIX PARPADEO: Activamos el GameObject pero mantenemos los renderers OFF hasta que el Animator
-    /// haya evaluado el primer frame de la animación de Draw. Así no se ve la pose por defecto.
-    /// </summary>
     private IEnumerator DrawWeaponRoutine()
     {
         _isTransitioning = true;
@@ -387,7 +373,7 @@ public class GunSystem : MonoBehaviour
         if (arms != null)
         {
             arms.SetActive(true);
-            SetArmsRenderersEnabled(false); // <-- CLAVE: ocultamos hasta primer frame válido
+            SetArmsRenderersEnabled(false);
         }
 
         if (anim != null && anim.isActiveAndEnabled)
@@ -396,12 +382,10 @@ public class GunSystem : MonoBehaviour
             anim.ResetTrigger("Draw");
             anim.SetFloat("DrawSpeed", 1f);
             anim.SetTrigger("Draw");
-            anim.Update(0f); // forzar evaluación inmediata del trigger
+            anim.Update(0f);
         }
 
-        // Esperamos un frame para que el SkinnedMeshRenderer evalúe la nueva pose
         yield return null;
-        // Y un frame extra para máxima seguridad ante latencia de transiciones del Animator
         yield return null;
 
         SetArmsRenderersEnabled(true);
@@ -464,7 +448,6 @@ public class GunSystem : MonoBehaviour
             anim.SetTrigger("SheathComplete");
         }
 
-        // Ocultar los renderers ANTES de SetActive(false) para evitar parpadeo de pose final
         SetArmsRenderersEnabled(false);
         if (arms != null) arms.SetActive(false);
 
@@ -478,6 +461,7 @@ public class GunSystem : MonoBehaviour
         _isShooting = true;
         _canShoot = false;
         _masterActionLock = true;
+        _shootCooldownProgress = 0f;
 
         ExecuteRaycast();
         _activeStats.currentMag--;
@@ -501,8 +485,15 @@ public class GunSystem : MonoBehaviour
             }
         }
 
-        yield return new WaitForSeconds(dynamicCooldown);
+        float elapsed = 0f;
+        while (elapsed < dynamicCooldown)
+        {
+            elapsed += Time.deltaTime;
+            _shootCooldownProgress = Mathf.Clamp01(elapsed / dynamicCooldown);
+            yield return null;
+        }
 
+        _shootCooldownProgress = 1f;
         _isShooting = false;
         _canShoot = true;
         _masterActionLock = false;
@@ -513,6 +504,7 @@ public class GunSystem : MonoBehaviour
         _isReloading = true;
         _canShoot = false;
         _masterActionLock = true;
+        _reloadProgress = 0f;
 
         AudioManager.Instance?.PlaySFX(reloadSfxId, transform.position);
 
@@ -532,11 +524,18 @@ public class GunSystem : MonoBehaviour
                 currentReloadTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
         }
 
-        yield return new WaitForSeconds(currentReloadTime);
+        float elapsed = 0f;
+        while (elapsed < currentReloadTime)
+        {
+            elapsed += Time.deltaTime;
+            _reloadProgress = Mathf.Clamp01(elapsed / currentReloadTime);
+            yield return null;
+        }
+
+        _reloadProgress = 1f;
 
         int bulletsNeeded = _activeStats.magCapacity - _activeStats.currentMag;
         int bulletsToReload = Mathf.Min(bulletsNeeded, _activeStats.reserveAmmo);
-
         _activeStats.currentMag += bulletsToReload;
         _activeStats.reserveAmmo -= bulletsToReload;
         SaveActiveStats();
@@ -560,7 +559,8 @@ public class GunSystem : MonoBehaviour
             if (_hit.collider.CompareTag("Enemy"))
             {
                 var health = _hit.collider.GetComponent<EnemyHealth>();
-                if (health != null) health.TakeDamage(_activeStats.damage);
+                if (health != null)
+                    health.TakeDamage(_activeStats.damage, currentBullet, _hit.point, _hit.normal);
             }
         }
     }
