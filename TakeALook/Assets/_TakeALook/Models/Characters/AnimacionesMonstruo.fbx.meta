@@ -31,11 +31,11 @@ ModelImporter:
     extraUserProperties: []
     clipAnimations:
     - serializedVersion: 16
-      name: Armature.006|Armature|mixamo.com|Layer0
-      takeName: Armature.006|Armature|mixamo.com|Layer0
+      name: Armature.006|Patrolling (1)
+      takeName: Armature.006|Patrolling
       internalID: -4748435580043838649
       firstFrame: 0
-      lastFrame: 130
+      lastFrame: 88
       wrapMode: 0
       orientationOffsetY: 0
       level: 0

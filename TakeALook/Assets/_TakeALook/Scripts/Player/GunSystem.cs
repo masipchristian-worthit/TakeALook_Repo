@@ -1,6 +1,8 @@
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using DG.Tweening;
 
 public class GunSystem : MonoBehaviour
 {
@@ -9,17 +11,17 @@ public class GunSystem : MonoBehaviour
     #region Serialized Fields
     [Header("Weapon State")]
     [SerializeField] private BulletType currentBullet = BulletType.Wolf;
-    [SerializeField] private float weaponSwapCooldown = 0.5f;
+    [SerializeField] private float weaponSwapCooldown = 0.18f;
 
     [Header("Weapon Transitions")]
     [SerializeField] GameObject arms;
-    [SerializeField] private float drawCooldown = 0.5f;
+    [SerializeField] private float drawCooldown = 0.6f;
+    [SerializeField] private float reloadTime = 1.5f;
     private bool _isTransitioning = false;
 
     [Header("General References")]
     [SerializeField] private Camera fpsCam;
     [SerializeField] private LayerMask impactLayer;
-    [Tooltip("Arrastra aquí manualmente el GameObject Manos_Pistola desde el Inspector")]
     [SerializeField] private Animator anim;
     [SerializeField] private GameObject shootVFX;
 
@@ -32,6 +34,35 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private bool _isShooting;
     [SerializeField] private bool _isReloading;
     [SerializeField] private bool _isGunDrawn;
+
+    [Header("Animation Performance Overrides")]
+    [Tooltip("Multiplicador global para acelerar las animaciones del Animator. 1 = Normal.")]
+    [SerializeField] private float globalAnimationSpeedMultiplier = 1.0f;
+    [Tooltip("Permite disparar más rápido que la animación. Si false, el cooldown se ajusta a la duración visual.")]
+    [SerializeField] private bool allowRapidFireOverlap = true;
+
+    [Header("Flashlight System")]
+    [SerializeField] private Light flashlight;
+    [SerializeField] private float maxFlashlightIntensity = 5f;
+    [SerializeField] private float flashlightTransitionTime = 0.8f;
+    [Range(0f, 1f)]
+    [Tooltip("0 = Transición suave, 1 = Parpadeo caótico.")]
+    [SerializeField] private float flashlightFlickerAmount = 0.5f;
+    [Tooltip("Empezar la partida con la linterna desbloqueada (testing). Desactívalo en producción.")]
+    [SerializeField] private bool startWithFlashlight = true;
+
+    [Header("Audio IDs")]
+    [SerializeField] private string drawSfxId = "gun_draw";
+    [SerializeField] private string sheathSfxId = "gun_sheath";
+    [SerializeField] private string shootSfxId = "gun_shoot";
+    [SerializeField] private string reloadSfxId = "gun_reload";
+    [SerializeField] private string emptySfxId = "gun_empty";
+    [SerializeField] private string swapSfxId = "gun_swap";
+    [SerializeField] private string flashlightOnId = "flashlight_on";
+    [SerializeField] private string flashlightOffId = "flashlight_off";
+
+    [Header("Input Buffer")]
+    [SerializeField] private float inputBufferWindow = 0.18f;
     #endregion
 
     #region Data Structures
@@ -55,36 +86,104 @@ public class GunSystem : MonoBehaviour
     private bool _canSwap = true;
     private bool _canReload = true;
     private RaycastHit _hit;
+    private bool _masterActionLock = false;
+
+    // Renderers cacheados para evitar parpadeo de malla en draw/sheath
+    private Renderer[] _armsRenderers;
+
+    // Input buffer (rueda del ratón)
+    private readonly Queue<int> _scrollBuffer = new Queue<int>();
+    private float _nextSwapAllowedTime;
+    private float _bufferLastEnqueueTime;
+
+    // Linterna
+    private bool _isFlashlightOn = false;
+    private bool _hasFlashlight = false;
+    private Tween _flashlightTween;
+    public bool HasFlashlight { get => _hasFlashlight; set => _hasFlashlight = value; }
+
+    // Public API para UI
+    public BulletType CurrentBulletType => currentBullet;
+    public int GetMag(BulletType type) => GetStatsRef(type).currentMag;
+    public int GetReserve(BulletType type) => GetStatsRef(type).reserveAmmo;
+    public int GetMagCapacity(BulletType type) => GetStatsRef(type).magCapacity;
+
+    private GunStats GetStatsRef(BulletType type)
+    {
+        switch (type)
+        {
+            case BulletType.Wolf: return wolfStats;
+            case BulletType.Bull: return bullStats;
+            case BulletType.Eagle: return eagleStats;
+        }
+        return wolfStats;
+    }
 
     private void Awake()
     {
-        // Survival Horror: Por defecto el arma está guardada
         _isGunDrawn = false;
+        _isTransitioning = false;
+        _isShooting = false;
+        _isReloading = false;
+        _masterActionLock = false;
+        _isFlashlightOn = false;
+        _hasFlashlight = startWithFlashlight;
 
-        // DEBUG TDAH: Balas infinitas temporales para que puedas testear que dispara
+        if (wolfStats.magCapacity <= 0) { wolfStats.magCapacity = 30; wolfStats.currentMag = 30; wolfStats.reserveAmmo = 90; wolfStats.damage = 10; wolfStats.range = 100f; wolfStats.maxReserveAmmo = 99; }
+        if (bullStats.magCapacity <= 0) { bullStats.magCapacity = 30; bullStats.currentMag = 30; bullStats.reserveAmmo = 90; bullStats.damage = 15; bullStats.range = 100f; bullStats.maxReserveAmmo = 99; }
+        if (eagleStats.magCapacity <= 0) { eagleStats.magCapacity = 30; eagleStats.currentMag = 30; eagleStats.reserveAmmo = 90; eagleStats.damage = 20; eagleStats.range = 100f; eagleStats.maxReserveAmmo = 99; }
+
         wolfStats.currentMag = wolfStats.magCapacity;
-        wolfStats.reserveAmmo = 99;
-
-        bullStats.currentMag = 0; bullStats.reserveAmmo = 0;
-        eagleStats.currentMag = 0; eagleStats.reserveAmmo = 0;
+        bullStats.currentMag = bullStats.magCapacity;
+        eagleStats.currentMag = eagleStats.magCapacity;
 
         UpdateActiveStats();
+
+        if (arms != null) _armsRenderers = arms.GetComponentsInChildren<Renderer>(true);
+
+        if (flashlight != null)
+        {
+            flashlight.intensity = 0f;
+            flashlight.gameObject.SetActive(false);
+        }
     }
 
     private void Start()
     {
-        // CRÍTICO: Aseguramos que al darle al Play, los brazos empiecen apagados
-        // Así forzamos al jugador a usar OnDrawn para sacarlos.
         if (arms != null) arms.SetActive(false);
+        if (anim != null) anim.speed = globalAnimationSpeedMultiplier;
     }
 
     private void Update()
     {
-        if (_isGunDrawn && !_isShooting && !_isReloading && _canSwap)
+        bool uiBlocked = UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen();
+
+        if (uiBlocked)
         {
-            HandleScrollInput();
+            _scrollBuffer.Clear();
+            return;
+        }
+
+        if (_isGunDrawn && !_isShooting && !_isReloading && _canSwap && !_masterActionLock)
+        {
+            ProcessScrollInput();
+            ProcessScrollBuffer();
         }
     }
+
+    #region Helpers - Renderers + Input Block
+    private void SetArmsRenderersEnabled(bool enabled)
+    {
+        if (_armsRenderers == null) return;
+        for (int i = 0; i < _armsRenderers.Length; i++)
+            if (_armsRenderers[i] != null) _armsRenderers[i].enabled = enabled;
+    }
+
+    private bool IsInputBlocked()
+    {
+        return UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen();
+    }
+    #endregion
 
     #region Data Management
     private void UpdateActiveStats()
@@ -107,58 +206,344 @@ public class GunSystem : MonoBehaviour
         }
     }
 
-    public void AddAmmo(BulletType type, int amount)
+    public bool AddAmmo(BulletType type, int amount)
     {
+        bool added = false;
         switch (type)
         {
             case BulletType.Wolf:
-                wolfStats.reserveAmmo = Mathf.Min(wolfStats.reserveAmmo + amount, wolfStats.maxReserveAmmo);
+                if (wolfStats.reserveAmmo < wolfStats.maxReserveAmmo)
+                {
+                    wolfStats.reserveAmmo = Mathf.Min(wolfStats.reserveAmmo + amount, wolfStats.maxReserveAmmo);
+                    added = true;
+                }
                 break;
             case BulletType.Bull:
-                bullStats.reserveAmmo = Mathf.Min(bullStats.reserveAmmo + amount, bullStats.maxReserveAmmo);
+                if (bullStats.reserveAmmo < bullStats.maxReserveAmmo)
+                {
+                    bullStats.reserveAmmo = Mathf.Min(bullStats.reserveAmmo + amount, bullStats.maxReserveAmmo);
+                    added = true;
+                }
                 break;
             case BulletType.Eagle:
-                eagleStats.reserveAmmo = Mathf.Min(eagleStats.reserveAmmo + amount, eagleStats.maxReserveAmmo);
+                if (eagleStats.reserveAmmo < eagleStats.maxReserveAmmo)
+                {
+                    eagleStats.reserveAmmo = Mathf.Min(eagleStats.reserveAmmo + amount, eagleStats.maxReserveAmmo);
+                    added = true;
+                }
                 break;
         }
         if (type == currentBullet) UpdateActiveStats();
+        return added;
+    }
+
+    public void SetBulletType(BulletType type)
+    {
+        if (type == currentBullet) return;
+        currentBullet = type;
+        UpdateActiveStats();
+        AudioManager.Instance?.PlayUI(swapSfxId);
+        StartCoroutine(SwapCooldownRoutine());
     }
     #endregion
 
-    private void HandleScrollInput()
+    #region Mouse Wheel - Input Buffer
+    private void ProcessScrollInput()
     {
+        if (Mouse.current == null) return;
         float scroll = Mouse.current.scroll.ReadValue().y;
         if (Mathf.Abs(scroll) > 0.1f)
         {
-            int next = (int)currentBullet + (scroll > 0 ? 1 : -1);
-            if (next < 0) next = 2;
-            if (next > 2) next = 0;
+            // Evitar enqueues múltiples por un mismo "tick" del scroll
+            if (Time.time - _bufferLastEnqueueTime > 0.04f)
+            {
+                _scrollBuffer.Enqueue(scroll > 0 ? 1 : -1);
+                _bufferLastEnqueueTime = Time.time;
 
-            currentBullet = (BulletType)next;
-            UpdateActiveStats();
-            StartCoroutine(SwapCooldownRoutine());
+                // Limitar tamaño del buffer
+                while (_scrollBuffer.Count > 4) _scrollBuffer.Dequeue();
+            }
+        }
+
+        // Descartar buffer si la entrada es muy antigua
+        if (_scrollBuffer.Count > 0 && Time.time - _bufferLastEnqueueTime > inputBufferWindow * 3f)
+            _scrollBuffer.Clear();
+    }
+
+    private void ProcessScrollBuffer()
+    {
+        if (_scrollBuffer.Count == 0 || Time.time < _nextSwapAllowedTime) return;
+        int dir = _scrollBuffer.Dequeue();
+        int next = ((int)currentBullet + dir + 3) % 3;
+        SetBulletType((BulletType)next);
+        _nextSwapAllowedTime = Time.time + weaponSwapCooldown;
+    }
+    #endregion
+
+    #region Input Methods (PlayerInput)
+    public void OnDrawn(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+        if (IsInputBlocked()) return;
+
+        if (_isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
+
+        if (!_isGunDrawn) StartCoroutine(DrawWeaponRoutine());
+        else StartCoroutine(SheathWeaponRoutine());
+    }
+
+    public void OnShoot(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+        if (IsInputBlocked()) return;
+        if (!_isGunDrawn || !_canShoot || _isReloading || _isTransitioning || _masterActionLock) return;
+
+        if (_activeStats.currentMag > 0)
+        {
+            StartCoroutine(ShootRoutine());
+        }
+        else
+        {
+            AudioManager.Instance?.PlaySFX(emptySfxId, transform.position);
         }
     }
 
+    public void OnReload(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+        if (IsInputBlocked()) return;
+        if (!_isGunDrawn || _isReloading || _isShooting || _isTransitioning || _masterActionLock) return;
+
+        bool needsReload = _activeStats.currentMag < _activeStats.magCapacity;
+        bool hasReserveAmmo = _activeStats.reserveAmmo > 0;
+        if (needsReload && hasReserveAmmo) StartCoroutine(ReloadRoutine());
+    }
+
+    public void OnInspect(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+        if (IsInputBlocked()) return;
+        if (!_isGunDrawn || _isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.ResetTrigger("Inspect");
+            anim.SetTrigger("Inspect");
+        }
+    }
+
+    public void OnFlashlight(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+        if (IsInputBlocked()) return;
+        if (flashlight == null || !_hasFlashlight) return;
+
+        _isFlashlightOn = !_isFlashlightOn;
+        AudioManager.Instance?.PlaySFX(_isFlashlightOn ? flashlightOnId : flashlightOffId, transform.position);
+
+        _flashlightTween?.Kill();
+
+        if (_isFlashlightOn)
+        {
+            flashlight.gameObject.SetActive(true);
+            _flashlightTween = DOVirtual.Float(flashlight.intensity, maxFlashlightIntensity, flashlightTransitionTime, val =>
+            {
+                if (flashlightFlickerAmount > 0f && Random.value < flashlightFlickerAmount * 0.4f)
+                    flashlight.intensity = val * Random.Range(0f, 0.3f);
+                else
+                    flashlight.intensity = val;
+            }).SetEase(Ease.OutQuad)
+              .OnComplete(() => flashlight.intensity = maxFlashlightIntensity);
+        }
+        else
+        {
+            _flashlightTween = DOVirtual.Float(flashlight.intensity, 0f, flashlightTransitionTime, val =>
+            {
+                if (flashlightFlickerAmount > 0f && Random.value < flashlightFlickerAmount * 0.4f)
+                    flashlight.intensity = val + Random.Range(0f, maxFlashlightIntensity * 0.6f);
+                else
+                    flashlight.intensity = val;
+            }).SetEase(Ease.InQuad)
+              .OnComplete(() =>
+              {
+                  flashlight.intensity = 0f;
+                  flashlight.gameObject.SetActive(false);
+              });
+        }
+    }
+    #endregion
+
     #region Coroutines & Logic
+    /// <summary>
+    /// FIX PARPADEO: Activamos el GameObject pero mantenemos los renderers OFF hasta que el Animator
+    /// haya evaluado el primer frame de la animación de Draw. Así no se ve la pose por defecto.
+    /// </summary>
+    private IEnumerator DrawWeaponRoutine()
+    {
+        _isTransitioning = true;
+        _isGunDrawn = true;
+        _masterActionLock = true;
+
+        if (arms != null)
+        {
+            arms.SetActive(true);
+            SetArmsRenderersEnabled(false); // <-- CLAVE: ocultamos hasta primer frame válido
+        }
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Draw");
+            anim.SetFloat("DrawSpeed", 1f);
+            anim.SetTrigger("Draw");
+            anim.Update(0f); // forzar evaluación inmediata del trigger
+        }
+
+        // Esperamos un frame para que el SkinnedMeshRenderer evalúe la nueva pose
+        yield return null;
+        // Y un frame extra para máxima seguridad ante latencia de transiciones del Animator
+        yield return null;
+
+        SetArmsRenderersEnabled(true);
+        AudioManager.Instance?.PlaySFX(drawSfxId, transform.position);
+
+        float wait = Mathf.Max(drawCooldown - Time.deltaTime * 2f, 0.05f);
+        yield return new WaitForSeconds(wait);
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.ResetTrigger("SheathComplete");
+            anim.SetTrigger("SheathComplete");
+        }
+
+        _canShoot = true;
+        _canSwap = true;
+        _canReload = true;
+        _isTransitioning = false;
+        _masterActionLock = false;
+    }
+
+    private IEnumerator SheathWeaponRoutine()
+    {
+        _isTransitioning = true;
+        _canShoot = false;
+        _canSwap = false;
+        _canReload = false;
+        _masterActionLock = true;
+
+        AudioManager.Instance?.PlaySFX(sheathSfxId, transform.position);
+        float actualSheathWait = drawCooldown;
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Draw");
+            anim.SetFloat("DrawSpeed", -1f);
+            anim.SetTrigger("Draw");
+            anim.Update(0f);
+
+            yield return null;
+
+            AnimatorStateInfo currentState = anim.GetCurrentAnimatorStateInfo(0);
+            AnimatorStateInfo nextState = anim.GetNextAnimatorStateInfo(0);
+
+            int targetStateHash = nextState.fullPathHash != 0 ? nextState.fullPathHash : currentState.fullPathHash;
+            float stateLength = nextState.fullPathHash != 0 ? nextState.length : currentState.length;
+
+            anim.Play(targetStateHash, 0, 1.0f);
+
+            if (stateLength > 0.05f)
+                actualSheathWait = stateLength / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
+        }
+
+        yield return new WaitForSeconds(actualSheathWait);
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.ResetTrigger("SheathComplete");
+            anim.SetTrigger("SheathComplete");
+        }
+
+        // Ocultar los renderers ANTES de SetActive(false) para evitar parpadeo de pose final
+        SetArmsRenderersEnabled(false);
+        if (arms != null) arms.SetActive(false);
+
+        _isGunDrawn = false;
+        _isTransitioning = false;
+        _masterActionLock = false;
+    }
+
     private IEnumerator ShootRoutine()
     {
         _isShooting = true;
         _canShoot = false;
+        _masterActionLock = true;
 
         ExecuteRaycast();
         _activeStats.currentMag--;
         SaveActiveStats();
 
-        anim.SetTrigger("Fire");
+        AudioManager.Instance?.PlaySFX(shootSfxId, transform.position);
+        float dynamicCooldown = _activeStats.shootingCooldown;
 
-        yield return null;
-        float animDuration = anim.GetCurrentAnimatorStateInfo(0).length;
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Fire");
+            anim.SetTrigger("Fire");
+            anim.Update(0f);
 
-        yield return new WaitForSeconds(Mathf.Max(animDuration, _activeStats.shootingCooldown));
+            if (!allowRapidFireOverlap)
+            {
+                AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+                if (stateInfo.length > _activeStats.shootingCooldown)
+                    dynamicCooldown = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
+            }
+        }
+
+        yield return new WaitForSeconds(dynamicCooldown);
 
         _isShooting = false;
         _canShoot = true;
+        _masterActionLock = false;
+    }
+
+    private IEnumerator ReloadRoutine()
+    {
+        _isReloading = true;
+        _canShoot = false;
+        _masterActionLock = true;
+
+        AudioManager.Instance?.PlaySFX(reloadSfxId, transform.position);
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Reload");
+            anim.SetTrigger("Reload");
+            anim.Update(0f);
+        }
+
+        float currentReloadTime = reloadTime;
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+            if (stateInfo.length > reloadTime)
+                currentReloadTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
+        }
+
+        yield return new WaitForSeconds(currentReloadTime);
+
+        int bulletsNeeded = _activeStats.magCapacity - _activeStats.currentMag;
+        int bulletsToReload = Mathf.Min(bulletsNeeded, _activeStats.reserveAmmo);
+
+        _activeStats.currentMag += bulletsToReload;
+        _activeStats.reserveAmmo -= bulletsToReload;
+        SaveActiveStats();
+
+        _isReloading = false;
+        _canShoot = true;
+        _masterActionLock = false;
     }
 
     private void ExecuteRaycast()
@@ -175,31 +560,9 @@ public class GunSystem : MonoBehaviour
             if (_hit.collider.CompareTag("Enemy"))
             {
                 var health = _hit.collider.GetComponent<EnemyHealth>();
-                if (health != null)
-                {
-                    health.TakeDamage(_activeStats.damage);
-                }
+                if (health != null) health.TakeDamage(_activeStats.damage);
             }
         }
-    }
-
-    private IEnumerator ReloadRoutine()
-    {
-        _isReloading = true;
-        anim.SetTrigger("Reload");
-
-        yield return null;
-        float animDuration = anim.GetCurrentAnimatorStateInfo(0).length;
-        yield return new WaitForSeconds(animDuration);
-
-        int bulletsNeeded = _activeStats.magCapacity - _activeStats.currentMag;
-        int bulletsToReload = Mathf.Min(bulletsNeeded, _activeStats.reserveAmmo);
-
-        _activeStats.currentMag += bulletsToReload;
-        _activeStats.reserveAmmo -= bulletsToReload;
-
-        SaveActiveStats();
-        _isReloading = false;
     }
 
     private IEnumerator SwapCooldownRoutine()
@@ -210,106 +573,25 @@ public class GunSystem : MonoBehaviour
     }
     #endregion
 
-    #region Input Methods
-    public void OnShoot(InputAction.CallbackContext context)
+    #region Debug Tools
+    [ContextMenu("Debug: Forzar Draw/Sheath")]
+    private void DebugForceDraw()
     {
-        // Chivato de Debug. Si no ves esto en consola, el Input System no encuentra el script.
-        if (context.performed) Debug.Log("Señal de Disparo recibida en GunSystem.");
-
-        if (context.performed && _isGunDrawn && _canShoot && !_isReloading && _activeStats.currentMag > 0)
-        {
-            StartCoroutine(ShootRoutine());
-        }
+        if (!_isGunDrawn) StartCoroutine(DrawWeaponRoutine());
+        else StartCoroutine(SheathWeaponRoutine());
     }
 
-    public void OnReload(InputAction.CallbackContext context)
+    [ContextMenu("Debug: Resetear Bloqueos")]
+    private void DebugResetStates()
     {
-        if (context.performed) Debug.Log("Señal de Recarga recibida en GunSystem.");
-
-        bool needsReload = _activeStats.currentMag < _activeStats.magCapacity;
-        bool hasReserveAmmo = _activeStats.reserveAmmo > 0;
-
-        if (context.performed && _isGunDrawn && needsReload && hasReserveAmmo && !_isReloading && !_isShooting)
-        {
-            StartCoroutine(ReloadRoutine());
-        }
-    }
-
-    public void OnInspect(InputAction.CallbackContext context)
-    {
-        if (context.performed && !_isShooting && !_isReloading && _isGunDrawn)
-        {
-            anim.SetTrigger("Inspect");
-        }
-    }
-
-    public void OnDrawn(InputAction.CallbackContext context)
-    {
-        if (context.performed) Debug.Log("Señal de DRAW recibida en GunSystem. Arma sacada: " + _isGunDrawn);
-
-        if (!context.performed || _isShooting || _isReloading || _isTransitioning) return;
-
-        if (!_isGunDrawn)
-        {
-            StartCoroutine(DrawWeaponRoutine());
-        }
-        else
-        {
-            StartCoroutine(SheathWeaponRoutine());
-        }
-    }
-
-    private IEnumerator DrawWeaponRoutine()
-    {
-        _isTransitioning = true;
-        _isGunDrawn = true;
-
-        // 1. Encendemos los brazos
-        arms.gameObject.SetActive(true);
-
-        // 2. EL FRAME VITAL PARA QUE UNITY REACCIONE
-        yield return null;
-
-        // 3. Mandamos las órdenes al Animator
-        anim.SetFloat("DrawSpeed", 1f);
-        anim.SetTrigger("Draw");
-
-        // 4. Esperamos otro frame para que el Animator actualice el estado interno
-        yield return null;
-
-        float animDuration = anim.GetCurrentAnimatorStateInfo(0).length;
-        yield return new WaitForSeconds(animDuration);
-
-        if (drawCooldown > 0) yield return new WaitForSeconds(drawCooldown);
-
+        StopAllCoroutines();
+        _isShooting = false;
+        _isReloading = false;
+        _isTransitioning = false;
         _canShoot = true;
         _canSwap = true;
         _canReload = true;
-
-        _isTransitioning = false;
-        Debug.Log("Proceso de Draw completado.");
-    }
-
-    private IEnumerator SheathWeaponRoutine()
-    {
-        _isTransitioning = true;
-
-        _canShoot = false;
-        _canSwap = false;
-        _canReload = false;
-
-        anim.SetFloat("DrawSpeed", -1f);
-        anim.SetTrigger("Draw");
-
-        yield return null;
-        float animDuration = anim.GetCurrentAnimatorStateInfo(0).length;
-        yield return new WaitForSeconds(animDuration);
-
-        arms.gameObject.SetActive(false);
-        _isGunDrawn = false;
-
-        _isTransitioning = false;
-        Debug.Log("Proceso de Sheath completado.");
+        _masterActionLock = false;
     }
     #endregion
 }
