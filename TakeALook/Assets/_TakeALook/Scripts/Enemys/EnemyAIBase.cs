@@ -2,584 +2,601 @@ using System.Collections;
 using UnityEngine;
 using UnityEngine.AI;
 
-/// <summary>
-/// IA del enemigo con máquina de estados: Patrol → Chase → Attack → Hide.
-///
-/// CONFIGURACIÓN EN INSPECTOR:
-/// - Waypoints: arrastra los GameObjects de waypoints (hijos del prefab o escena).
-/// - Obstacle Layer: capas que bloquean la visión (Default, Walls…). NO incluir la capa del player.
-/// - Target Layer: capa del player (Player).
-/// - Vision modifiers: crouch reduce visión, linterna y sprint la aumentan.
-/// - maxChaseDistanceFromWaypoint: límite de alejamiento del waypoint más cercano para perseguir.
-/// - playerLowAmmoThreshold: si el total de balas del player es ≤ este valor, el enemigo persigue agresivamente.
-/// </summary>
 public class EnemyAIBase : MonoBehaviour
 {
-    public enum AIState { Patrol, Chase, Attack, Hide, Stunned }
+    private enum EnemyState { Patrolling, Chasing, Rushing, Attacking, Hiding, Stunned, Dead }
+    private EnemyState _state = EnemyState.Patrolling;
 
     #region Inspector
-    [Header("Navegación")]
+    [Header("AI Configuration")]
     [SerializeField] NavMeshAgent agent;
+    [SerializeField] Transform target;
     [SerializeField] Animator anim;
-
-    [Header("Waypoints (GameObjects en escena/prefab)")]
-    [SerializeField] Transform[] waypoints;
-    [SerializeField] float minWaitAtWaypoint = 3f;
-    [SerializeField] float maxWaitAtWaypoint = 6f;
-    [Range(0f, 1f)]
-    [SerializeField] float chanceToSkipWait = 0.25f;
-
-    [Header("Detección - Rangos")]
-    [SerializeField] float sightRange = 8f;
-    [SerializeField] float attackRange = 2f;
-    [SerializeField] float eyeHeight = 1.5f;
     [SerializeField] LayerMask targetLayer;
-    [Tooltip("Capas que bloquean la línea de visión (paredes, puertas…). NO incluir la capa del player.")]
-    [SerializeField] LayerMask obstacleLayer;
 
-    [Header("Detección - Modificadores")]
-    [Tooltip("Multiplica el rango cuando el player está agachado (0.5 = mitad de rango).")]
-    [SerializeField] float crouchSightMultiplier = 0.5f;
-    [Tooltip("Multiplica el rango cuando el player lleva la linterna encendida.")]
-    [SerializeField] float flashlightSightMultiplier = 1.8f;
-    [Tooltip("Multiplica el rango cuando el player corre.")]
-    [SerializeField] float sprintSightMultiplier = 1.4f;
+    [Header("Patrol")]
+    [SerializeField] float walkPointRange = 8f;
+    [SerializeField] bool useWaypoints;
+    [SerializeField] Transform[] waypoints;
+    [SerializeField] float minWaitAtWaypointTime = 3f;
+    [SerializeField] float maxWaitAtWaypointTime = 6f;
+    [SerializeField, Range(0f, 1f)] float chanceToSkipWait = 0.25f;
 
-    [Header("Límite de persecución")]
-    [Tooltip("Distancia máxima desde el waypoint más cercano a la que el enemigo persigue al player.")]
-    [SerializeField] float maxChaseDistanceFromWaypoint = 15f;
+    [Header("Chase Delay")]
+    [SerializeField] float minChaseDelay = 0.5f;
+    [SerializeField] float maxChaseDelay = 1.2f;
 
-    [Header("Delay de inicio de persecución")]
-    [SerializeField] float minChaseDelay = 1f;
-    [SerializeField] float maxChaseDelay = 2f;
-
-    [Header("Ataque")]
-    [SerializeField] float minAttackCooldown = 2f;
-    [SerializeField] float maxAttackCooldown = 4f;
-    [SerializeField] GameObject projectile;
+    [Header("Attack")]
+    [SerializeField] GameObject projectilePrefab;
     [SerializeField] Transform shootPoint;
-    [SerializeField] float shootSpeed = 2.5f;
+    [SerializeField] float shootSpeed = 15f;
+    [SerializeField] float minTimeBetweenAttacks = 3f;
+    [SerializeField] float maxTimeBetweenAttacks = 6f;
+    [Tooltip("Timeout de seguridad si el Animation Event de disparo nunca llega.")]
+    [SerializeField] float roarShootDelay = 1.83f;
+    [Tooltip("Timeout de seguridad si el Animation Event de fin de Roar nunca llega.")]
+    [SerializeField] float roarTotalDuration = 2.5f;
+    [Tooltip("Timeout de seguridad para la animación Being_Shot (forward + recovery).")]
+    [SerializeField] float hitStunSafetyTimeout = 2.5f;
 
-    [Header("Velocidades")]
-    [SerializeField] float patrolSpeed = 2f;
-    [SerializeField] float chaseSpeed = 4f;
-    [SerializeField] float hideSpeed = 3.5f;
-
-    [Header("Comportamiento Inteligente")]
-    [Tooltip("Si el total de balas del player es ≤ este valor, el enemigo persigue en vez de esconderse.")]
-    [SerializeField] int playerLowAmmoThreshold = 8;
-
-    [Header("Stun (bala Bull)")]
-    [SerializeField] float stunDuration = 2f;
-    [SerializeField] GameObject stunVFX;
-
-    [Header("Detección de atasco")]
-    [SerializeField] float stuckCheckInterval = 2f;
-    [SerializeField] float stuckThreshold = 0.1f;
-    [SerializeField] float maxStuckDuration = 4f;
-
-    [Header("Gizmos")]
+    [Header("Detection")]
+    [SerializeField] float sightRange = 8f;
+    [SerializeField] float eyeHeight = 1.5f;
+    [SerializeField] float attackRange = 6f;
     [SerializeField] Color visionGizmoColor = new Color(1f, 0f, 0f, 0.25f);
+
+    [Header("Movement Speeds")]
+    [SerializeField] float patrolSpeed = 1.5f;
+    [SerializeField] float chaseSpeed = 3.5f;
+    [SerializeField] float rushSpeed = 5.5f;
+    [SerializeField] float fleeSpeed = 5f;
+
+    [Header("Rush (Player Out Of Ammo)")]
+    [Tooltip("Distancia bajo la cual el rusher pasa directamente a atacar.")]
+    [SerializeField] float rushAttackRange = 4f;
+    [Tooltip("Tiempo extra que sigue rusheando tras detectar mag vacío, por si el jugador recarga rápido.")]
+    [SerializeField] float rushPersistTime = 1.5f;
+
+    [Header("Hide Conditions")]
+    [Tooltip("HP por debajo del cual el enemigo intentará huir.")]
+    [SerializeField, Range(0f, 1f)] float lowHealthThreshold = 0.2f;
+    [SerializeField] float fleeDistance = 15f;
+
+    [Header("Stuck Detection")]
+    [SerializeField] float stuckCheckTime = 2f;
+    [SerializeField] float stuckThreshold = 0.1f;
+    [SerializeField] float maxStuckDuration = 3f;
     #endregion
 
-    // Referencias al player
-    private Transform _target;
-    private FPS_Controller _playerFPS;
-    private GunSystem _playerGun;
+    // Internal state
+    Vector3 walkPoint;
+    bool walkPointSet;
+    int currentWaypointIndex;
+    bool isWaitingAtWaypoint;
+    float waitTimer;
+    bool isWaitingBeforeChase;
+    float chaseDelayTimer;
+    bool alreadyAttacked;
+    bool isInvulnerable;
 
-    // Estado
-    private AIState _state = AIState.Patrol;
-    private bool _isStunned;
+    // Flags driven from Animation Events on the enemy clips.
+    bool _shootEventFired;
+    bool _roarFinishedEvent;
+    bool _hitForwardFinishedEvent;
+    bool _hitRecoveryFinishedEvent;
+    float stuckTimer;
+    float lastCheckTime;
+    Vector3 lastPosition;
+    float rushUntilTime;
 
-    // Patrol
-    private int _currentWaypointIndex;
-    private bool _waitingAtWaypoint;
-    private float _waypointWaitTimer;
-    private bool _walkPointSet;
-    private Vector3 _walkPoint;
+    // Component refs
+    PlayerHealth _playerHealth;
+    GunSystem _playerGunSystem;
+    EnemyHealth _enemyHealth;
 
-    // Chase delay (primera vez que ve al player)
-    private bool _chaseDelayActive;
-    private float _chaseDelayTimer;
+    // Animator hashes
+    static readonly int H_IsPatrolling = Animator.StringToHash("isPatrolling");
+    static readonly int H_IsChasing = Animator.StringToHash("isChasing");
+    static readonly int H_IsAttacking = Animator.StringToHash("isAttacking");
+    static readonly int H_Roar = Animator.StringToHash("Roar");
+    static readonly int H_Shot = Animator.StringToHash("Shot");
+    static readonly int H_Death = Animator.StringToHash("Death");
+    static readonly int H_Electrocuted = Animator.StringToHash("Electrocuted");
 
-    // Ataque
-    private bool _attackOnCooldown;
+    // Public API
+    public bool IsInvulnerable => isInvulnerable;
+    public bool IsDead => _state == EnemyState.Dead;
 
-    // Hide
-    private int _hideWaypointIndex = -1;
-
-    // Stuck detection
-    private Vector3 _lastStuckPos;
-    private float _lastStuckTime;
-    private float _stuckTimer;
-
-    #region Lifecycle
     private void Awake()
     {
-        agent = GetComponent<NavMeshAgent>();
-        anim = GetComponentInChildren<Animator>();
-
-        GameObject player = GameObject.FindGameObjectWithTag("Player");
-        if (player != null)
+        GameObject playerObj = GameObject.FindWithTag("Player");
+        if (playerObj != null)
         {
-            _target = player.transform;
-            _playerFPS = player.GetComponent<FPS_Controller>();
-            _playerGun = player.GetComponentInChildren<GunSystem>();
+            target = playerObj.transform;
+            _playerHealth = playerObj.GetComponentInChildren<PlayerHealth>();
+            _playerGunSystem = playerObj.GetComponentInChildren<GunSystem>();
         }
 
-        _lastStuckPos = transform.position;
-        _lastStuckTime = Time.time;
+        if (agent == null) agent = GetComponent<NavMeshAgent>();
+        if (anim == null) anim = GetComponentInChildren<Animator>();
+        _enemyHealth = GetComponent<EnemyHealth>();
+
+        lastPosition = transform.position;
+        lastCheckTime = Time.time;
     }
 
     private void Start()
     {
-        agent.speed = patrolSpeed;
-
-        if (waypoints != null && waypoints.Length > 0)
-            _currentWaypointIndex = Random.Range(0, waypoints.Length);
-
-        if (stunVFX != null) stunVFX.SetActive(false);
+        if (useWaypoints && waypoints != null && waypoints.Length > 0)
+            currentWaypointIndex = Random.Range(0, waypoints.Length);
+        if (agent != null) agent.speed = patrolSpeed;
     }
 
-    private void Update()
+    void Update()
     {
-        if (_isStunned) return;
-        UpdateStateMachine();
-        CheckStuck();
+        if (_state == EnemyState.Stunned || _state == EnemyState.Dead) return;
+        EvaluateState();
+        CheckIfStuck();
     }
-    #endregion
 
-    #region Máquina de Estados
-    private void UpdateStateMachine()
+    #region State Machine
+    void EvaluateState()
     {
-        bool canSee = CanSeePlayer();
-
-        switch (_state)
+        // Si estamos atacando, terminamos el ciclo (Roar + cooldown) antes de reevaluar.
+        // Evita que el Roar se cancele a medias y que el Animator entre/salga del estado en bucle.
+        if (_state == EnemyState.Attacking && alreadyAttacked)
         {
-            case AIState.Patrol:
-                if (canSee) EnterCombat();
-                else ExecutePatrol();
-                break;
-
-            case AIState.Chase:
-                if (!canSee || !IsWithinChaseRange())
-                {
-                    _chaseDelayActive = false;
-                    TransitionTo(AIState.Patrol);
-                }
-                else
-                {
-                    float dist = Vector3.Distance(transform.position, _target.position);
-                    if (dist <= attackRange) TransitionTo(AIState.Attack);
-                    else ExecuteChase();
-                }
-                break;
-
-            case AIState.Attack:
-                if (!canSee) { TransitionTo(AIState.Patrol); }
-                else
-                {
-                    float dist = Vector3.Distance(transform.position, _target.position);
-                    // Sale de Attack si el player se aleja más de 1.2x el rango
-                    if (dist > attackRange * 1.2f) TransitionTo(AIState.Chase);
-                    else ExecuteAttack();
-                }
-                break;
-
-            case AIState.Hide:
-                if (!canSee) { TransitionTo(AIState.Patrol); }
-                else if (ShouldChaseAggressively()) { EnterCombat(); }
-                else ExecuteHide();
-                break;
-        }
-    }
-
-    private void EnterCombat()
-    {
-        TransitionTo(ShouldChaseAggressively() ? AIState.Chase : AIState.Hide);
-    }
-
-    // Devuelve true cuando el player tiene pocas balas (el enemigo ataca)
-    private bool ShouldChaseAggressively()
-    {
-        if (_playerGun == null) return true;
-        int total = _playerGun.GetMag(GunSystem.BulletType.Wolf) + _playerGun.GetReserve(GunSystem.BulletType.Wolf)
-                  + _playerGun.GetMag(GunSystem.BulletType.Bull) + _playerGun.GetReserve(GunSystem.BulletType.Bull)
-                  + _playerGun.GetMag(GunSystem.BulletType.Eagle) + _playerGun.GetReserve(GunSystem.BulletType.Eagle);
-        return total <= playerLowAmmoThreshold;
-    }
-
-    private void TransitionTo(AIState newState)
-    {
-        if (_state == newState) return;
-        _state = newState;
-
-        switch (newState)
-        {
-            case AIState.Patrol:
-                agent.isStopped = false;
-                agent.speed = patrolSpeed;
-                _chaseDelayActive = false;
-                _walkPointSet = false;
-                SetAnim();
-                break;
-
-            case AIState.Chase:
-                agent.isStopped = false;
-                agent.speed = chaseSpeed;
-                _chaseDelayActive = false;
-                break;
-
-            case AIState.Attack:
-                agent.isStopped = true;
-                agent.ResetPath();
-                SetAnim(attack: true);
-                break;
-
-            case AIState.Hide:
-                agent.isStopped = false;
-                agent.speed = hideSpeed;
-                _hideWaypointIndex = GetFurthestWaypointFromPlayer();
-                _walkPointSet = false;
-                SetAnim(patrol: true);
-                break;
-
-            case AIState.Stunned:
-                agent.isStopped = true;
-                agent.ResetPath();
-                SetAnim();
-                break;
-        }
-    }
-    #endregion
-
-    #region Ejecución de Estados
-    private void ExecutePatrol()
-    {
-        if (!agent.isOnNavMesh) return;
-
-        if (_waitingAtWaypoint)
-        {
-            SetAnim();
-            _waypointWaitTimer -= Time.deltaTime;
-            if (_waypointWaitTimer <= 0f)
-            {
-                _waitingAtWaypoint = false;
-                _walkPointSet = false;
-                AdvanceWaypoint();
-            }
+            FaceTarget();
             return;
         }
 
-        if (!_walkPointSet)
+        bool inSight = CanSeeTarget();
+        float dist = target != null ? Vector3.Distance(transform.position, target.position) : float.MaxValue;
+
+        // Refrescar persistencia de rush si el jugador está sin balas
+        if (IsPlayerOutOfAmmo()) rushUntilTime = Time.time + rushPersistTime;
+        bool rushActive = inSight && Time.time < rushUntilTime;
+
+        EnemyState next;
+        if (!inSight)
         {
-            if (waypoints != null && waypoints.Length > 0)
-            {
-                _walkPoint = waypoints[_currentWaypointIndex].position;
-                _walkPointSet = true;
-            }
-            else
-            {
-                SearchRandomWalkPoint();
-            }
+            next = EnemyState.Patrolling;
         }
-
-        if (_walkPointSet)
+        else if (rushActive)
         {
-            SetAnim(patrol: true);
-            agent.SetDestination(_walkPoint);
+            // Si está pegado al jugador y vacío, ataca igualmente
+            next = (dist <= rushAttackRange) ? EnemyState.Attacking : EnemyState.Rushing;
         }
-
-        if (_walkPointSet && !agent.pathPending && agent.remainingDistance <= 0.5f)
+        else if (dist <= attackRange)
         {
-            agent.ResetPath();
-
-            if (Random.value < chanceToSkipWait)
-            {
-                _walkPointSet = false;
-                AdvanceWaypoint();
-            }
-            else
-            {
-                _waitingAtWaypoint = true;
-                _waypointWaitTimer = Random.Range(minWaitAtWaypoint, maxWaitAtWaypoint);
-            }
+            next = EnemyState.Attacking;
         }
-    }
-
-    private void ExecuteChase()
-    {
-        if (!agent.isOnNavMesh) return;
-
-        // Pausa inicial al detectar al player
-        if (!_chaseDelayActive)
+        else if (ShouldHide())
         {
-            _chaseDelayActive = true;
-            _chaseDelayTimer = Random.Range(minChaseDelay, maxChaseDelay);
-            agent.ResetPath();
-            SetAnim();
-            return;
-        }
-
-        if (_chaseDelayTimer > 0f)
-        {
-            _chaseDelayTimer -= Time.deltaTime;
-            agent.ResetPath();
-            SetAnim();
-            return;
-        }
-
-        SetAnim(chase: true);
-        agent.isStopped = false;
-        agent.SetDestination(_target.position);
-        TryShoot();
-    }
-
-    private void ExecuteAttack()
-    {
-        if (!agent.isOnNavMesh) return;
-
-        agent.isStopped = true;
-        agent.ResetPath();
-
-        // Girar hacia el player
-        Vector3 dir = _target.position - transform.position;
-        dir.y = 0;
-        if (dir != Vector3.zero)
-        {
-            Quaternion look = Quaternion.LookRotation(dir);
-            transform.rotation = Quaternion.RotateTowards(
-                transform.rotation, look, agent.angularSpeed * Time.deltaTime);
-        }
-
-        TryShoot();
-    }
-
-    private void ExecuteHide()
-    {
-        if (!agent.isOnNavMesh || waypoints == null || waypoints.Length == 0)
-        {
-            // Sin waypoints: comportamiento de patrulla normal
-            ExecutePatrol();
-            return;
-        }
-
-        if (_hideWaypointIndex < 0 || _hideWaypointIndex >= waypoints.Length)
-            _hideWaypointIndex = GetFurthestWaypointFromPlayer();
-
-        Vector3 hidePos = waypoints[_hideWaypointIndex].position;
-        float distToHide = Vector3.Distance(transform.position, hidePos);
-
-        agent.SetDestination(hidePos);
-
-        if (distToHide <= 1.2f)
-        {
-            // En la posición de cobertura: dispara oportunistamente
-            SetAnim(attack: !_attackOnCooldown && CanSeePlayer());
-            if (CanSeePlayer()) TryShoot();
+            next = EnemyState.Hiding;
         }
         else
         {
-            SetAnim(patrol: true);
+            next = EnemyState.Chasing;
         }
-    }
-    #endregion
 
-    #region Visión (LOS + Modificadores)
-    private bool CanSeePlayer()
-    {
-        if (_target == null) return false;
+        ChangeState(next);
 
-        Vector3 eyePos = transform.position + Vector3.up * eyeHeight;
-        Vector3 playerCenter = _target.position + Vector3.up * 1f;
-
-        // Rango base con modificadores según estado del player
-        float range = sightRange;
-
-        if (_playerFPS != null)
+        switch (_state)
         {
-            if (_playerFPS.IsCrouchingPublic) range *= crouchSightMultiplier;
-            if (_playerFPS.IsSprintingPublic) range *= sprintSightMultiplier;
+            case EnemyState.Patrolling: DoPatrol(); break;
+            case EnemyState.Chasing: DoChase(); break;
+            case EnemyState.Rushing: DoRush(); break;
+            case EnemyState.Attacking: DoAttack(); break;
+            case EnemyState.Hiding: DoFlee(); break;
         }
-
-        if (_playerGun != null && _playerGun.IsFlashlightOn)
-            range *= flashlightSightMultiplier;
-
-        float dist = Vector3.Distance(eyePos, playerCenter);
-        if (dist > range) return false;
-
-        // Comprobar línea de visión: si algo bloquea, no ve al player
-        Vector3 dir = (playerCenter - eyePos).normalized;
-        if (Physics.Raycast(eyePos, dir, dist, obstacleLayer))
-            return false;
-
-        return true;
     }
 
-    // Comprueba que el enemigo no haya perseguido al player demasiado lejos de sus waypoints
-    private bool IsWithinChaseRange()
+    void ChangeState(EnemyState next)
     {
-        if (waypoints == null || waypoints.Length == 0) return true;
+        if (_state == next) return;
 
-        float minDist = float.MaxValue;
-        for (int i = 0; i < waypoints.Length; i++)
+        if (next != EnemyState.Chasing)
         {
-            if (waypoints[i] == null) continue;
-            float d = Vector3.Distance(transform.position, waypoints[i].position);
-            if (d < minDist) minDist = d;
+            isWaitingBeforeChase = false;
+            chaseDelayTimer = 0f;
         }
-        return minDist <= maxChaseDistanceFromWaypoint;
+
+        _state = next;
+    }
+
+    bool ShouldHide()
+    {
+        // Solo huyen si están realmente al borde de la muerte.
+        return _enemyHealth != null && _enemyHealth.HealthPercent <= lowHealthThreshold;
+    }
+
+    bool IsPlayerOutOfAmmo()
+    {
+        return _playerGunSystem != null && _playerGunSystem.IsCurrentMagEmpty;
     }
     #endregion
 
-    #region Ataque
-    private void TryShoot()
+    #region State Behaviors
+    void DoPatrol()
     {
-        if (_attackOnCooldown || projectile == null || shootPoint == null) return;
+        if (!agent.isOnNavMesh) return;
+        agent.speed = patrolSpeed;
+        SetAnimator(true, false, false);
 
-        SetAnim(attack: true);
+        if (isWaitingAtWaypoint)
+        {
+            waitTimer -= Time.deltaTime;
+            if (waitTimer <= 0f)
+            {
+                isWaitingAtWaypoint = false;
+                walkPointSet = false;
+                if (useWaypoints && waypoints != null && waypoints.Length > 0) SetNextWaypoint();
+            }
+            return;
+        }
 
-        Vector3 targetCenter = _target.position + Vector3.up * 1f;
-        Vector3 dir = (targetCenter - shootPoint.position).normalized;
+        if (!walkPointSet)
+        {
+            if (useWaypoints && waypoints != null && waypoints.Length > 0)
+            {
+                walkPoint = waypoints[currentWaypointIndex].position;
+                walkPointSet = true;
+            }
+            else SearchWalkPoint();
 
-        var proj = Instantiate(projectile, shootPoint.position, Quaternion.identity);
-        var rb = proj.GetComponent<Rigidbody>();
-        if (rb != null) rb.AddForce(dir * shootSpeed, ForceMode.Impulse);
+            if (!walkPointSet) return;
+        }
 
-        _attackOnCooldown = true;
-        Invoke(nameof(ResetAttack), Random.Range(minAttackCooldown, maxAttackCooldown));
+        agent.SetDestination(walkPoint);
+
+        if (!agent.pathPending && agent.remainingDistance <= 0.5f)
+        {
+            agent.ResetPath();
+            walkPointSet = false;
+            bool skip = Random.value < chanceToSkipWait;
+            if (skip && useWaypoints && waypoints != null && waypoints.Length > 0)
+                SetNextWaypoint();
+            else
+            {
+                isWaitingAtWaypoint = true;
+                waitTimer = Random.Range(minWaitAtWaypointTime, maxWaitAtWaypointTime);
+            }
+        }
     }
 
-    private void ResetAttack()
+    void DoChase()
     {
-        _attackOnCooldown = false;
-        // Sólo quitamos el flag de ataque; el SetAnim lo gestiona el estado activo
-        if (anim != null) anim.SetBool("IsAttacking", false);
-    }
-    #endregion
+        if (!agent.isOnNavMesh || target == null) return;
+        agent.speed = chaseSpeed;
 
-    #region Stun
-    public void Stun(float duration = -1f)
-    {
-        if (_isStunned) return;
-        StartCoroutine(StunRoutine(duration > 0f ? duration : stunDuration));
+        if (!isWaitingBeforeChase)
+        {
+            isWaitingBeforeChase = true;
+            chaseDelayTimer = Random.Range(minChaseDelay, maxChaseDelay);
+            agent.ResetPath();
+            SetAnimator(false, false, false);
+            return;
+        }
+
+        if (chaseDelayTimer > 0f)
+        {
+            chaseDelayTimer -= Time.deltaTime;
+            agent.ResetPath();
+            SetAnimator(false, false, false);
+            return;
+        }
+
+        SetAnimator(false, true, false);
+        agent.SetDestination(target.position);
     }
 
-    private IEnumerator StunRoutine(float duration)
+    void DoRush()
     {
-        _isStunned = true;
-        _state = AIState.Stunned;
-        agent.isStopped = true;
+        if (!agent.isOnNavMesh || target == null) return;
+        agent.speed = rushSpeed;
+        SetAnimator(false, true, false);
+        agent.SetDestination(target.position);
+    }
+
+    void DoAttack()
+    {
+        if (!agent.isOnNavMesh) return;
         agent.ResetPath();
+        FaceTarget();
 
-        CancelInvoke(nameof(ResetAttack));
-        _attackOnCooldown = false;
+        if (!alreadyAttacked)
+        {
+            _attackRoutine = StartCoroutine(AttackCoroutine());
+        }
+    }
 
-        if (stunVFX != null) stunVFX.SetActive(true);
-        SetAnim();
-        if (anim != null) anim.SetBool("isStunned", true);
+    void DoFlee()
+    {
+        if (!agent.isOnNavMesh || target == null) return;
+        agent.speed = fleeSpeed;
+        // Animación de correr para huir
+        SetAnimator(false, true, false);
 
-        yield return new WaitForSeconds(duration);
+        Vector3 fleeDir = (transform.position - target.position).normalized;
+        Vector3 fleeTarget = transform.position + fleeDir * fleeDistance;
+        if (NavMesh.SamplePosition(fleeTarget, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+            agent.SetDestination(hit.position);
+    }
 
-        _isStunned = false;
-        if (anim != null) anim.SetBool("isStunned", false);
-        if (stunVFX != null) stunVFX.SetActive(false);
+    Coroutine _attackRoutine;
 
-        agent.isStopped = false;
-        TransitionTo(AIState.Patrol);
+    IEnumerator AttackCoroutine()
+    {
+        alreadyAttacked = true;
+        _shootEventFired = false;
+        _roarFinishedEvent = false;
+
+        // Trigger Roar. El bool isAttacking se mantiene SOLO mientras se reproduce el clip,
+        // así el Animator no puede relanzarse en bucle si el trigger ya fue consumido.
+        SetAnimator(false, false, true);
+        if (anim != null) { anim.ResetTrigger(H_Roar); anim.SetTrigger(H_Roar); }
+
+        // Esperar al Animation Event de disparo (con timeout de seguridad)
+        float t = 0f;
+        while (!_shootEventFired && t < roarShootDelay + 1f)
+        {
+            if (_state == EnemyState.Dead || _state == EnemyState.Stunned) { _attackRoutine = null; yield break; }
+            t += Time.deltaTime;
+            yield return null;
+        }
+        if (!_shootEventFired) FireProjectile(); // fallback si no hay evento
+
+        // Esperar al Animation Event de fin de Roar (con timeout de seguridad)
+        t = 0f;
+        float remainingTimeout = Mathf.Max(0f, roarTotalDuration - roarShootDelay) + 1f;
+        while (!_roarFinishedEvent && t < remainingTimeout)
+        {
+            if (_state == EnemyState.Dead || _state == EnemyState.Stunned) { _attackRoutine = null; yield break; }
+            t += Time.deltaTime;
+            yield return null;
+        }
+
+        // Liberar el bool DESPUÉS de que el clip haya terminado de reproducirse
+        if (anim != null) anim.SetBool(H_IsAttacking, false);
+
+        // Cooldown entre ataques
+        float cooldown = Random.Range(minTimeBetweenAttacks, maxTimeBetweenAttacks);
+        if (cooldown > 0f) yield return new WaitForSeconds(cooldown);
+
+        alreadyAttacked = false;
+        _attackRoutine = null;
     }
     #endregion
 
-    #region Waypoints
-    private void AdvanceWaypoint()
+    #region Combat / Animation Events
+    void FireProjectile()
     {
-        if (waypoints == null || waypoints.Length <= 1) return;
-        int next;
-        do { next = Random.Range(0, waypoints.Length); }
-        while (next == _currentWaypointIndex);
-        _currentWaypointIndex = next;
+        if (projectilePrefab == null || shootPoint == null || target == null) return;
+        Vector3 dir = (target.position + Vector3.up * 1f - shootPoint.position).normalized;
+        GameObject proj = Instantiate(projectilePrefab, shootPoint.position, Quaternion.LookRotation(dir));
+        Rigidbody rb = proj.GetComponent<Rigidbody>();
+        if (rb != null) rb.linearVelocity = dir * shootSpeed;
     }
 
-    private int GetFurthestWaypointFromPlayer()
+    // ============================================================
+    // ANIMATION EVENT HOOKS — colgar estos métodos en los clips:
+    //
+    //  Roar.anim:
+    //   - frame del disparo  -> OnShootAnimationEvent()
+    //   - último frame       -> OnRoarFinishedAnimationEvent()
+    //
+    //  Being_Shot.anim (forward):
+    //   - último frame       -> OnHitForwardFinishedAnimationEvent()
+    //
+    //  Being_Shot_Recovery.anim (la animación "negativa" que vuelve a Idle):
+    //   - último frame       -> OnHitRecoveryFinishedAnimationEvent()
+    // ============================================================
+    public void OnShootAnimationEvent()
     {
-        if (waypoints == null || waypoints.Length == 0) return 0;
-        int idx = 0;
-        float maxDist = -1f;
-        for (int i = 0; i < waypoints.Length; i++)
+        _shootEventFired = true;
+        FireProjectile();
+    }
+    public void OnRoarFinishedAnimationEvent() => _roarFinishedEvent = true;
+    public void OnHitForwardFinishedAnimationEvent() => _hitForwardFinishedEvent = true;
+    public void OnHitRecoveryFinishedAnimationEvent() => _hitRecoveryFinishedEvent = true;
+
+    public void OnHitByNormalBullet()
+    {
+        if (isInvulnerable || _state == EnemyState.Dead) return;
+        StopAllCoroutines();
+        _attackRoutine = null;
+        StartCoroutine(HitStunRoutine());
+    }
+
+    IEnumerator HitStunRoutine()
+    {
+        _state = EnemyState.Stunned;
+        isInvulnerable = true;
+        alreadyAttacked = false;
+        _hitForwardFinishedEvent = false;
+        _hitRecoveryFinishedEvent = false;
+
+        if (agent != null && agent.isOnNavMesh) agent.ResetPath();
+        SetAnimator(false, false, false);
+
+        if (anim != null)
         {
-            if (waypoints[i] == null) continue;
-            float d = Vector3.Distance(waypoints[i].position, _target.position);
-            if (d > maxDist) { maxDist = d; idx = i; }
+            anim.ResetTrigger(H_Roar);
+            anim.ResetTrigger(H_Shot);
+            anim.SetTrigger(H_Shot);
         }
-        return idx;
+
+        // Forward: esperar al Animation Event del último frame del clip Being_Shot
+        float t = 0f;
+        while (!_hitForwardFinishedEvent && t < hitStunSafetyTimeout)
+        {
+            t += Time.deltaTime;
+            yield return null;
+        }
+
+        // Recovery: esperar al Animation Event del último frame del clip "shoot negativo" que devuelve a Idle
+        t = 0f;
+        while (!_hitRecoveryFinishedEvent && t < hitStunSafetyTimeout)
+        {
+            t += Time.deltaTime;
+            yield return null;
+        }
+
+        // Forzar pose neutra por si los eventos no llegaron a tiempo
+        if (anim != null)
+        {
+            anim.ResetTrigger(H_Shot);
+            anim.SetBool(H_IsPatrolling, false);
+            anim.SetBool(H_IsChasing, false);
+            anim.SetBool(H_IsAttacking, false);
+        }
+
+        isInvulnerable = false;
+        _state = EnemyState.Patrolling;
     }
 
-    private void SearchRandomWalkPoint()
+    public void OnKilledByNormalBullet()
+    {
+        StopAllCoroutines();
+        _attackRoutine = null;
+        StartCoroutine(DeathSequence(H_Death));
+    }
+
+    public void OnKilledByBullBullet()
+    {
+        StopAllCoroutines();
+        _attackRoutine = null;
+        StartCoroutine(DeathSequence(H_Electrocuted));
+    }
+
+    IEnumerator DeathSequence(int triggerHash)
+    {
+        _state = EnemyState.Dead;
+        isInvulnerable = true;
+        if (agent != null) agent.enabled = false;
+
+        Collider[] cols = GetComponentsInChildren<Collider>();
+        for (int i = 0; i < cols.Length; i++) cols[i].enabled = false;
+
+        if (anim != null)
+        {
+            // Limpiar triggers que pudieran reactivarse
+            anim.ResetTrigger(H_Roar);
+            anim.ResetTrigger(H_Shot);
+            anim.SetBool(H_IsPatrolling, false);
+            anim.SetBool(H_IsChasing, false);
+            anim.SetBool(H_IsAttacking, false);
+            anim.ResetTrigger(triggerHash);
+            anim.SetTrigger(triggerHash);
+        }
+
+        yield return null;
+        if (anim != null)
+            while (anim.IsInTransition(0)) yield return null;
+
+        float len = 1.5f;
+        if (anim != null)
+        {
+            AnimatorStateInfo info = anim.GetCurrentAnimatorStateInfo(0);
+            len = info.length > 0.1f ? info.length : 1.5f;
+        }
+        yield return new WaitForSeconds(len);
+
+        _enemyHealth?.StartDeathFade();
+    }
+    #endregion
+
+    #region Helpers
+    bool CanSeeTarget()
+    {
+        if (target == null) return false;
+        Vector3 origin = transform.position + Vector3.up * eyeHeight;
+        Collider[] hits = Physics.OverlapSphere(origin, sightRange, targetLayer);
+        for (int i = 0; i < hits.Length; i++)
+            if (hits[i].transform == target) return true;
+        return false;
+    }
+
+    void FaceTarget()
+    {
+        if (target == null) return;
+        Vector3 dir = (target.position - transform.position).normalized;
+        dir.y = 0;
+        if (dir != Vector3.zero)
+            transform.rotation = Quaternion.RotateTowards(
+                transform.rotation, Quaternion.LookRotation(dir), agent.angularSpeed * Time.deltaTime);
+    }
+
+    void SetAnimator(bool patrolling, bool chasing, bool attacking)
+    {
+        if (anim == null) return;
+        anim.SetBool(H_IsPatrolling, patrolling);
+        anim.SetBool(H_IsChasing, chasing);
+        anim.SetBool(H_IsAttacking, attacking);
+    }
+
+    void SearchWalkPoint()
     {
         for (int i = 0; i < 5; i++)
         {
-            Vector3 rnd = transform.position + new Vector3(
-                Random.Range(-8f, 8f), 0, Random.Range(-8f, 8f));
-            if (NavMesh.SamplePosition(rnd, out NavMeshHit hit, 2f, NavMesh.AllAreas))
+            Vector3 candidate = transform.position + new Vector3(
+                Random.Range(-walkPointRange, walkPointRange), 0,
+                Random.Range(-walkPointRange, walkPointRange));
+            if (NavMesh.SamplePosition(candidate, out NavMeshHit hit, 2f, NavMesh.AllAreas))
             {
-                _walkPoint = hit.position;
-                _walkPointSet = true;
+                walkPoint = hit.position;
+                walkPointSet = true;
                 return;
             }
         }
     }
-    #endregion
 
-    #region Animador
-    private void SetAnim(bool patrol = false, bool chase = false, bool attack = false)
+    void SetNextWaypoint()
     {
-        if (anim == null) return;
-        anim.SetBool("isPatrolling", patrol);
-        anim.SetBool("isChasing", chase);
-        anim.SetBool("IsAttacking", attack);
-        anim.SetBool("isStunned", _isStunned);
+        if (waypoints == null || waypoints.Length == 0) return;
+        int next = Random.Range(0, waypoints.Length);
+        while (waypoints.Length > 1 && next == currentWaypointIndex)
+            next = Random.Range(0, waypoints.Length);
+        currentWaypointIndex = next;
+        walkPoint = waypoints[currentWaypointIndex].position;
+        walkPointSet = true;
     }
-    #endregion
 
-    #region Detección de atasco
-    private void CheckStuck()
+    void CheckIfStuck()
     {
         if (!agent.isOnNavMesh) return;
-        if (Time.time - _lastStuckTime < stuckCheckInterval) return;
-
-        float moved = Vector3.Distance(transform.position, _lastStuckPos);
-        _stuckTimer = (moved < stuckThreshold && agent.hasPath)
-            ? _stuckTimer + stuckCheckInterval
-            : 0f;
-
-        if (_stuckTimer >= maxStuckDuration)
+        if (Time.time - lastCheckTime > stuckCheckTime)
         {
-            _stuckTimer = 0f;
-            TransitionTo(AIState.Patrol);
-        }
+            float moved = Vector3.Distance(transform.position, lastPosition);
+            stuckTimer = (moved < stuckThreshold && agent.hasPath) ? stuckTimer + stuckCheckTime : 0f;
 
-        _lastStuckPos = transform.position;
-        _lastStuckTime = Time.time;
+            if (stuckTimer >= maxStuckDuration)
+            {
+                walkPointSet = false;
+                isWaitingAtWaypoint = true;
+                waitTimer = Random.Range(minWaitAtWaypointTime, maxWaitAtWaypointTime);
+                isWaitingBeforeChase = false;
+                chaseDelayTimer = 0f;
+                agent.ResetPath();
+                SetAnimator(false, false, false);
+                stuckTimer = 0f;
+            }
+
+            lastPosition = transform.position;
+            lastCheckTime = Time.time;
+        }
     }
     #endregion
 
-    #region Gizmos
     private void OnDrawGizmosSelected()
     {
-        Vector3 eye = transform.position + Vector3.up * eyeHeight;
-
+        Vector3 origin = transform.position + Vector3.up * eyeHeight;
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, attackRange);
-
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, rushAttackRange);
         Gizmos.color = visionGizmoColor;
-        Gizmos.DrawWireSphere(eye, sightRange);
-
-        if (waypoints != null && maxChaseDistanceFromWaypoint > 0f)
-        {
-            Gizmos.color = Color.yellow;
-            foreach (var wp in waypoints)
-                if (wp != null) Gizmos.DrawWireSphere(wp.position, maxChaseDistanceFromWaypoint);
-        }
+        Gizmos.DrawWireSphere(origin, sightRange);
     }
-    #endregion
 }

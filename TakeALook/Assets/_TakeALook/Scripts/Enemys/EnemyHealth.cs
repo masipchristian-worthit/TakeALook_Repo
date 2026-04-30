@@ -1,87 +1,134 @@
+using System.Collections;
 using UnityEngine;
 
 public class EnemyHealth : MonoBehaviour
 {
-    [Header("Salud")]
+    [Header("Health")]
     [SerializeField] int maxHealth = 100;
 
-    [Header("Feedback Visual")]
+    [Header("Hit Feedback")]
     [SerializeField] Material damagedMat;
-    [SerializeField] MeshRenderer enemyRend;
-    [SerializeField] GameObject deathVfx;
 
-    [Header("VFX de Impacto (salpicadura de sangre)")]
-    [Tooltip("Prefab de partículas que se instancia en el punto de impacto del raycast.")]
-    [SerializeField] GameObject bloodSplatterPrefab;
+    [Header("Death Fade")]
+    [Tooltip("Segundos de espera tras acabar la animación de muerte antes del fade.")]
+    [SerializeField] float deathWaitBeforeFade = 0.5f;
+    [Tooltip("Duración en segundos del dissolve/fade granulado.")]
+    [SerializeField] float fadeDuration = 2f;
+    [Tooltip("Nombre del float de dissolve en el shader (e.g. _DissolveAmount). Fallback: alpha.")]
+    [SerializeField] string dissolveProperty = "_DissolveAmount";
 
-    [Header("Stun - Bala Bull")]
-    [SerializeField] float bullStunDuration = 2f;
-    [Tooltip("Referencia al componente EnemyAIBase del mismo GameObject.")]
-    [SerializeField] EnemyAIBase aiBase;
+    [Header("Refs")]
+    [Tooltip("Renderers de la malla del enemigo. Se auto-detectan si se dejan vacíos.")]
+    [SerializeField] Renderer[] meshRenderers;
 
-    private int _health;
-    private Material _baseMat;
-    private bool _isDead;
+    int _currentHealth;
+    bool _isDead;
+    Material _baseMat;
+    Renderer _firstRenderer;
+    EnemyAIBase _ai;
 
-    private void Awake()
+    public float HealthPercent => _isDead ? 0f : (float)_currentHealth / Mathf.Max(1, maxHealth);
+
+    void Awake()
     {
-        _health = maxHealth;
-        if (enemyRend != null) _baseMat = enemyRend.material;
-        if (aiBase == null) aiBase = GetComponent<EnemyAIBase>();
+        _currentHealth = maxHealth;
+        _ai = GetComponent<EnemyAIBase>();
+
+        if (meshRenderers == null || meshRenderers.Length == 0)
+            meshRenderers = GetComponentsInChildren<Renderer>();
+
+        if (meshRenderers.Length > 0)
+        {
+            _firstRenderer = meshRenderers[0];
+            _baseMat = _firstRenderer.material;
+        }
     }
 
-    /// <summary>
-    /// Aplica daño al enemigo.
-    /// Llamado desde GunSystem.ExecuteRaycast con tipo de bala y datos de impacto.
-    /// </summary>
-    public void TakeDamage(int damage,
-                           GunSystem.BulletType bulletType = GunSystem.BulletType.Wolf,
-                           Vector3 hitPoint = default,
-                           Vector3 hitNormal = default)
+    // isBullBullet = true mata de un golpe con animación Electrocuted
+    public void TakeDamage(int damage, bool isBullBullet = false)
     {
         if (_isDead) return;
 
-        _health -= damage;
-
-        // Salpicadura de sangre en el punto de impacto
-        if (bloodSplatterPrefab != null && hitNormal != Vector3.zero)
+        if (isBullBullet)
         {
-            var vfx = Instantiate(bloodSplatterPrefab, hitPoint,
-                Quaternion.LookRotation(hitNormal));
-            Destroy(vfx, 5f);
+            Kill(isBull: true);
+            return;
         }
 
-        // Bala Bull: stun al enemigo
-        if (bulletType == GunSystem.BulletType.Bull && aiBase != null)
-            aiBase.Stun(bullStunDuration);
+        if (_ai != null && _ai.IsInvulnerable) return;
 
-        // Flash de material
-        if (enemyRend != null && damagedMat != null)
+        // Feedback visual de impacto
+        if (damagedMat != null && _firstRenderer != null)
         {
-            enemyRend.material = damagedMat;
+            _firstRenderer.material = damagedMat;
             Invoke(nameof(ResetMat), 0.1f);
         }
 
-        if (_health <= 0) Die();
+        _currentHealth = Mathf.Max(0, _currentHealth - damage);
+
+        if (_currentHealth <= 0)
+            Kill(isBull: false);
+        else
+            _ai?.OnHitByNormalBullet();
     }
 
-    private void Die()
+    void Kill(bool isBull)
     {
         if (_isDead) return;
         _isDead = true;
+        _currentHealth = 0;
+        CancelInvoke(nameof(ResetMat));
 
-        if (deathVfx != null)
-        {
-            deathVfx.SetActive(true);
-            deathVfx.transform.position = transform.position;
-        }
-
-        gameObject.SetActive(false);
+        if (isBull) _ai?.OnKilledByBullBullet();
+        else _ai?.OnKilledByNormalBullet();
     }
 
-    private void ResetMat()
+    void ResetMat()
     {
-        if (enemyRend != null && _baseMat != null)
-            enemyRend.material = _baseMat;
+        if (_firstRenderer != null && _baseMat != null)
+            _firstRenderer.material = _baseMat;
+    }
+
+    // Llamado por EnemyAIBase al terminar la animación de muerte
+    public void StartDeathFade() => StartCoroutine(FadeOut());
+
+    IEnumerator FadeOut()
+    {
+        yield return new WaitForSeconds(deathWaitBeforeFade);
+
+        // Crear instancias de material por instancia para no afectar otros enemigos
+        Material[] mats = new Material[meshRenderers.Length];
+        for (int i = 0; i < meshRenderers.Length; i++)
+        {
+            if (meshRenderers[i] != null)
+                mats[i] = meshRenderers[i].material; // crea instancia
+        }
+
+        float elapsed = 0f;
+        while (elapsed < fadeDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / fadeDuration);
+
+            for (int i = 0; i < mats.Length; i++)
+            {
+                if (mats[i] == null) continue;
+
+                if (mats[i].HasProperty(dissolveProperty))
+                {
+                    mats[i].SetFloat(dissolveProperty, t);
+                }
+                else
+                {
+                    // Fallback: fade de alpha (requiere modo Transparent en el material)
+                    Color c = mats[i].color;
+                    c.a = 1f - t;
+                    mats[i].color = c;
+                }
+            }
+            yield return null;
+        }
+
+        Destroy(gameObject);
     }
 }

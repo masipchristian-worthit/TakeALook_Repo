@@ -38,7 +38,7 @@ public class GunSystem : MonoBehaviour
     [Header("Animation Performance Overrides")]
     [Tooltip("Multiplicador global para acelerar las animaciones del Animator. 1 = Normal.")]
     [SerializeField] private float globalAnimationSpeedMultiplier = 1.0f;
-    [Tooltip("Permite disparar más rápido que la animación. Si false, el cooldown se ajusta a la duración visual.")]
+    [Tooltip("Permite disparar m�s r�pido que la animaci�n. Si false, el cooldown se ajusta a la duraci�n visual.")]
     [SerializeField] private bool allowRapidFireOverlap = true;
 
     [Header("Flashlight System")]
@@ -46,9 +46,9 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private float maxFlashlightIntensity = 5f;
     [SerializeField] private float flashlightTransitionTime = 0.8f;
     [Range(0f, 1f)]
-    [Tooltip("0 = Transición suave, 1 = Parpadeo caótico.")]
+    [Tooltip("0 = Transici�n suave, 1 = Parpadeo ca�tico.")]
     [SerializeField] private float flashlightFlickerAmount = 0.5f;
-    [Tooltip("Empezar la partida con la linterna desbloqueada (testing). Desactívalo en producción.")]
+    [Tooltip("Empezar la partida con la linterna desbloqueada (testing). Desact�valo en producci�n.")]
     [SerializeField] private bool startWithFlashlight = true;
 
     [Header("Audio IDs")]
@@ -88,8 +88,27 @@ public class GunSystem : MonoBehaviour
     private RaycastHit _hit;
     private bool _masterActionLock = false;
 
+    // Cooldown tracking para la barra de UI
+    private float _lastShotTime = -999f;
+    private float _lastShotCooldown = 1f;
+    private float _reloadStartTime = -999f;
+    private float _reloadTotalTime = 1f;
+
+    // 1.0 = recién disparado (barra llena), 0.0 = listo para disparar (barra vacía)
+    public float ShootCooldownNormalized =>
+        1f - Mathf.Clamp01((Time.time - _lastShotTime) / Mathf.Max(0.001f, _lastShotCooldown));
+
+    // Public API para WeaponHUD
+    public bool IsReloading => _isReloading;
+    public bool IsShooting => _isShooting;
+    public float ShootCooldownProgress => ShootCooldownNormalized;
+    public float ReloadProgress =>
+        Mathf.Clamp01((Time.time - _reloadStartTime) / Mathf.Max(0.001f, _reloadTotalTime));
+
+    // Renderers cacheados para evitar parpadeo de malla en draw/sheath
     private Renderer[] _armsRenderers;
 
+    // Input buffer (rueda del rat�n)
     private readonly Queue<int> _scrollBuffer = new Queue<int>();
     private float _nextSwapAllowedTime;
     private float _bufferLastEnqueueTime;
@@ -98,23 +117,16 @@ public class GunSystem : MonoBehaviour
     private bool _isFlashlightOn = false;
     private bool _hasFlashlight = false;
     private Tween _flashlightTween;
-
-    // Progress tracking para HUD
-    private float _reloadProgress = 1f;
-    private float _shootCooldownProgress = 1f;
-
-    // Public API
-    public BulletType CurrentBulletType => currentBullet;
-    public bool IsReloading => _isReloading;
-    public bool IsShooting => _isShooting;
-    public float ReloadProgress => _reloadProgress;
-    public float ShootCooldownProgress => _shootCooldownProgress;
-    public bool IsFlashlightOn => _isFlashlightOn;
     public bool HasFlashlight { get => _hasFlashlight; set => _hasFlashlight = value; }
 
+    // Public API para UI
+    public BulletType CurrentBulletType => currentBullet;
     public int GetMag(BulletType type) => GetStatsRef(type).currentMag;
     public int GetReserve(BulletType type) => GetStatsRef(type).reserveAmmo;
     public int GetMagCapacity(BulletType type) => GetStatsRef(type).magCapacity;
+
+    // True si el cargador del arma activa está vacío (los enemigos lo usan para rushear).
+    public bool IsCurrentMagEmpty => _activeStats.currentMag <= 0;
 
     private GunStats GetStatsRef(BulletType type)
     {
@@ -158,7 +170,15 @@ public class GunSystem : MonoBehaviour
 
     private void Start()
     {
-        if (arms != null) arms.SetActive(false);
+        // El GameObject de los brazos se mantiene SIEMPRE activo para que el Animator
+        // no se reinicie cada vez que se saca/guarda el arma (eso causaba parpadeos
+        // y desincronización entre la malla y el estado _isGunDrawn).
+        // La visibilidad se controla únicamente toggleando los renderers.
+        if (arms != null)
+        {
+            arms.SetActive(true);
+            SetArmsRenderersEnabled(false);
+        }
         if (anim != null) anim.speed = globalAnimationSpeedMultiplier;
     }
 
@@ -179,7 +199,7 @@ public class GunSystem : MonoBehaviour
         }
     }
 
-    #region Helpers
+    #region Helpers - Renderers + Input Block
     private void SetArmsRenderersEnabled(bool enabled)
     {
         if (_armsRenderers == null) return;
@@ -221,15 +241,24 @@ public class GunSystem : MonoBehaviour
         {
             case BulletType.Wolf:
                 if (wolfStats.reserveAmmo < wolfStats.maxReserveAmmo)
-                { wolfStats.reserveAmmo = Mathf.Min(wolfStats.reserveAmmo + amount, wolfStats.maxReserveAmmo); added = true; }
+                {
+                    wolfStats.reserveAmmo = Mathf.Min(wolfStats.reserveAmmo + amount, wolfStats.maxReserveAmmo);
+                    added = true;
+                }
                 break;
             case BulletType.Bull:
                 if (bullStats.reserveAmmo < bullStats.maxReserveAmmo)
-                { bullStats.reserveAmmo = Mathf.Min(bullStats.reserveAmmo + amount, bullStats.maxReserveAmmo); added = true; }
+                {
+                    bullStats.reserveAmmo = Mathf.Min(bullStats.reserveAmmo + amount, bullStats.maxReserveAmmo);
+                    added = true;
+                }
                 break;
             case BulletType.Eagle:
                 if (eagleStats.reserveAmmo < eagleStats.maxReserveAmmo)
-                { eagleStats.reserveAmmo = Mathf.Min(eagleStats.reserveAmmo + amount, eagleStats.maxReserveAmmo); added = true; }
+                {
+                    eagleStats.reserveAmmo = Mathf.Min(eagleStats.reserveAmmo + amount, eagleStats.maxReserveAmmo);
+                    added = true;
+                }
                 break;
         }
         if (type == currentBullet) UpdateActiveStats();
@@ -253,14 +282,18 @@ public class GunSystem : MonoBehaviour
         float scroll = Mouse.current.scroll.ReadValue().y;
         if (Mathf.Abs(scroll) > 0.1f)
         {
+            // Evitar enqueues m�ltiples por un mismo "tick" del scroll
             if (Time.time - _bufferLastEnqueueTime > 0.04f)
             {
                 _scrollBuffer.Enqueue(scroll > 0 ? 1 : -1);
                 _bufferLastEnqueueTime = Time.time;
+
+                // Limitar tama�o del buffer
                 while (_scrollBuffer.Count > 4) _scrollBuffer.Dequeue();
             }
         }
 
+        // Descartar buffer si la entrada es muy antigua
         if (_scrollBuffer.Count > 0 && Time.time - _bufferLastEnqueueTime > inputBufferWindow * 3f)
             _scrollBuffer.Clear();
     }
@@ -280,6 +313,7 @@ public class GunSystem : MonoBehaviour
     {
         if (!context.performed) return;
         if (IsInputBlocked()) return;
+
         if (_isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
 
         if (!_isGunDrawn) StartCoroutine(DrawWeaponRoutine());
@@ -293,9 +327,13 @@ public class GunSystem : MonoBehaviour
         if (!_isGunDrawn || !_canShoot || _isReloading || _isTransitioning || _masterActionLock) return;
 
         if (_activeStats.currentMag > 0)
+        {
             StartCoroutine(ShootRoutine());
+        }
         else
+        {
             AudioManager.Instance?.PlaySFX(emptySfxId, transform.position);
+        }
     }
 
     public void OnReload(InputAction.CallbackContext context)
@@ -364,29 +402,44 @@ public class GunSystem : MonoBehaviour
     #endregion
 
     #region Coroutines & Logic
+    /// <summary>
+    /// FIX PARPADEO: el GameObject 'arms' se mantiene siempre activo (Start). Aquí solo encendemos
+    /// los renderers DESPUÉS de que el Animator haya evaluado el primer frame del clip de Draw.
+    /// </summary>
     private IEnumerator DrawWeaponRoutine()
     {
         _isTransitioning = true;
         _isGunDrawn = true;
         _masterActionLock = true;
 
-        if (arms != null)
-        {
-            arms.SetActive(true);
-            SetArmsRenderersEnabled(false);
-        }
+        // Garantizamos que el GO esté activo y los renderers ocultos antes de empezar.
+        if (arms != null && !arms.activeSelf) arms.SetActive(true);
+        SetArmsRenderersEnabled(false);
 
         if (anim != null && anim.isActiveAndEnabled)
         {
             anim.speed = globalAnimationSpeedMultiplier;
             anim.ResetTrigger("Draw");
+            anim.ResetTrigger("SheathComplete");
             anim.SetFloat("DrawSpeed", 1f);
             anim.SetTrigger("Draw");
-            anim.Update(0f);
+            anim.Update(0f); // forzar evaluación inmediata del trigger
         }
 
+        // Esperamos hasta que el Animator haya entrado de verdad en el estado de Draw,
+        // para que los renderers no se enciendan mostrando una pose intermedia.
         yield return null;
-        yield return null;
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            float guard = 0f;
+            while (anim.IsInTransition(0) && guard < 0.25f)
+            {
+                guard += Time.deltaTime;
+                yield return null;
+            }
+            anim.Update(0f);
+        }
+        yield return new WaitForEndOfFrame();
 
         SetArmsRenderersEnabled(true);
         AudioManager.Instance?.PlaySFX(drawSfxId, transform.position);
@@ -422,6 +475,7 @@ public class GunSystem : MonoBehaviour
         {
             anim.speed = globalAnimationSpeedMultiplier;
             anim.ResetTrigger("Draw");
+            anim.ResetTrigger("SheathComplete");
             anim.SetFloat("DrawSpeed", -1f);
             anim.SetTrigger("Draw");
             anim.Update(0f);
@@ -448,8 +502,10 @@ public class GunSystem : MonoBehaviour
             anim.SetTrigger("SheathComplete");
         }
 
+        // Solo ocultamos los renderers. NO desactivamos el GameObject para evitar
+        // que el Animator se reinicie en el próximo Draw (causa raíz del parpadeo
+        // y de que pareciera que "no se contaba como sacada" la primera vez).
         SetArmsRenderersEnabled(false);
-        if (arms != null) arms.SetActive(false);
 
         _isGunDrawn = false;
         _isTransitioning = false;
@@ -461,7 +517,6 @@ public class GunSystem : MonoBehaviour
         _isShooting = true;
         _canShoot = false;
         _masterActionLock = true;
-        _shootCooldownProgress = 0f;
 
         ExecuteRaycast();
         _activeStats.currentMag--;
@@ -485,15 +540,11 @@ public class GunSystem : MonoBehaviour
             }
         }
 
-        float elapsed = 0f;
-        while (elapsed < dynamicCooldown)
-        {
-            elapsed += Time.deltaTime;
-            _shootCooldownProgress = Mathf.Clamp01(elapsed / dynamicCooldown);
-            yield return null;
-        }
+        _lastShotTime = Time.time;
+        _lastShotCooldown = dynamicCooldown;
 
-        _shootCooldownProgress = 1f;
+        yield return new WaitForSeconds(dynamicCooldown);
+
         _isShooting = false;
         _canShoot = true;
         _masterActionLock = false;
@@ -504,7 +555,6 @@ public class GunSystem : MonoBehaviour
         _isReloading = true;
         _canShoot = false;
         _masterActionLock = true;
-        _reloadProgress = 0f;
 
         AudioManager.Instance?.PlaySFX(reloadSfxId, transform.position);
 
@@ -524,18 +574,14 @@ public class GunSystem : MonoBehaviour
                 currentReloadTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
         }
 
-        float elapsed = 0f;
-        while (elapsed < currentReloadTime)
-        {
-            elapsed += Time.deltaTime;
-            _reloadProgress = Mathf.Clamp01(elapsed / currentReloadTime);
-            yield return null;
-        }
+        _reloadStartTime = Time.time;
+        _reloadTotalTime = currentReloadTime;
 
-        _reloadProgress = 1f;
+        yield return new WaitForSeconds(currentReloadTime);
 
         int bulletsNeeded = _activeStats.magCapacity - _activeStats.currentMag;
         int bulletsToReload = Mathf.Min(bulletsNeeded, _activeStats.reserveAmmo);
+
         _activeStats.currentMag += bulletsToReload;
         _activeStats.reserveAmmo -= bulletsToReload;
         SaveActiveStats();
@@ -556,11 +602,21 @@ public class GunSystem : MonoBehaviour
             if (_activeStats.impactEffect)
                 Instantiate(_activeStats.impactEffect, _hit.point, Quaternion.LookRotation(_hit.normal));
 
+            bool isBullBullet = currentBullet == BulletType.Bull;
+
+            // Headshot: si el collider impactado tiene HeadshotCollider, aplicar multiplicador
+            var headshot = _hit.collider.GetComponent<HeadshotCollider>();
+            if (headshot != null)
+            {
+                headshot.ApplyDamage(_activeStats.damage, isBullBullet);
+                return;
+            }
+
             if (_hit.collider.CompareTag("Enemy"))
             {
                 var health = _hit.collider.GetComponent<EnemyHealth>();
-                if (health != null)
-                    health.TakeDamage(_activeStats.damage, currentBullet, _hit.point, _hit.normal);
+                if (health == null) health = _hit.collider.GetComponentInParent<EnemyHealth>();
+                if (health != null) health.TakeDamage(_activeStats.damage, isBullBullet);
             }
         }
     }

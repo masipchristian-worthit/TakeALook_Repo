@@ -1,10 +1,9 @@
-using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 public class FPS_Controller : MonoBehaviour
 {
-    #region Inspector
+    #region General Variables
     [Header("Movement & Look")]
     [SerializeField] GameObject camHolder;
     [SerializeField] float speed = 5f;
@@ -20,15 +19,19 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] float groundCheckRadius = 0.3f;
     [SerializeField] LayerMask groundLayer;
 
-    [Header("Crouch Settings")]
-    [SerializeField] float crouchCamOffset = -0.4f;
-    [SerializeField] float crouchTransitionTime = 0.22f;
-    [SerializeField] float crouchColliderHeight = 1.2f;
-    [SerializeField] float crouchColliderCenterY = 0.6f;
-
-    [Header("Player State (Read-Only in Play)")]
+    [Header("Player State Bools")]
     [SerializeField] bool isSprinting;
     [SerializeField] bool IsCrouching;
+
+    [Header("Sprint Stamina")]
+    [Tooltip("Duración máxima del sprint en segundos.")]
+    [SerializeField] float maxSprintStamina = 5f;
+    [Tooltip("Stamina consumida por segundo mientras se corre.")]
+    [SerializeField] float staminaDepletionRate = 1f;
+    [Tooltip("Stamina recuperada por segundo cuando no se corre.")]
+    [SerializeField] float staminaRechargeRate = 0.8f;
+    [Tooltip("Cooldown (segundos) una vez la stamina llega a 0. No se puede sprintar hasta que pase.")]
+    [SerializeField] float staminaCooldownAfterEmpty = 2f;
 
     [Header("Interaction")]
     [SerializeField] float interactDistance = 3f;
@@ -47,15 +50,7 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] PlayerInventory playerInventory;
     #endregion
 
-    // Public state (leído por EnemyAIBase)
-    public bool IsCrouchingPublic => IsCrouching;
-    public bool IsSprintingPublic => isSprinting;
-
     Rigidbody rb;
-    CapsuleCollider capsule;
-    float _standColliderHeight;
-    float _standColliderCenterY;
-
     Vector2 moveInput;
     Vector2 lookInput;
     float lookRotation;
@@ -64,24 +59,26 @@ public class FPS_Controller : MonoBehaviour
     float defaultXPos;
     float timer;
 
-    // Crouch camera smooth transition
-    float _crouchYOffset;
-    float _targetCrouchYOffset;
-
-    // Sprint-from-crouch state
-    bool _isStandingUp;
-    bool _pendingSprint;
-
     CodeDoor[] codeDoors;
     bool isUsingCodePanel;
 
+    // Sprint stamina internals
+    float _sprintStamina;
+    bool _staminaOnCooldown;
+    float _staminaCooldownTimer;
+
+    // Public API para UI
+    public float SprintStaminaNormalized => _sprintStamina / Mathf.Max(0.001f, maxSprintStamina);
+    public bool IsStaminaOnCooldown => _staminaOnCooldown;
+
     private bool IsUIOpen() => UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen();
     private bool IsAnyBlocker() => isUsingCodePanel || IsUIOpen();
+    private bool CanSprint => !_staminaOnCooldown && _sprintStamina > 0f;
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
-        capsule = GetComponent<CapsuleCollider>();
+        _sprintStamina = maxSprintStamina;
     }
 
     void Start()
@@ -92,12 +89,6 @@ public class FPS_Controller : MonoBehaviour
         defaultYPos = camHolder.transform.localPosition.y;
         defaultXPos = camHolder.transform.localPosition.x;
 
-        if (capsule != null)
-        {
-            _standColliderHeight = capsule.height;
-            _standColliderCenterY = capsule.center.y;
-        }
-
         codeDoors = FindObjectsByType<CodeDoor>(FindObjectsSortMode.None);
     }
 
@@ -107,11 +98,8 @@ public class FPS_Controller : MonoBehaviour
 
         Debug.DrawRay(camHolder.transform.position, camHolder.transform.forward * 3f, Color.red);
 
-        // Crouch camera smooth lerp
-        _crouchYOffset = Mathf.Lerp(_crouchYOffset, _targetCrouchYOffset,
-            Time.deltaTime / Mathf.Max(0.01f, crouchTransitionTime));
-
         CheckIfUsingCodePanel();
+        UpdateSprintStamina();
 
         if (IsAnyBlocker())
         {
@@ -168,6 +156,35 @@ public class FPS_Controller : MonoBehaviour
         }
     }
 
+    void UpdateSprintStamina()
+    {
+        bool activelySprinting = isSprinting && moveInput.magnitude > 0.1f && isGrounded;
+
+        if (_staminaOnCooldown)
+        {
+            _staminaCooldownTimer -= Time.deltaTime;
+            if (_staminaCooldownTimer <= 0f) _staminaOnCooldown = false;
+            if (isSprinting) isSprinting = false;
+            return;
+        }
+
+        if (activelySprinting)
+        {
+            _sprintStamina -= staminaDepletionRate * Time.deltaTime;
+            if (_sprintStamina <= 0f)
+            {
+                _sprintStamina = 0f;
+                isSprinting = false;
+                _staminaOnCooldown = true;
+                _staminaCooldownTimer = staminaCooldownAfterEmpty;
+            }
+        }
+        else
+        {
+            _sprintStamina = Mathf.Min(maxSprintStamina, _sprintStamina + staminaRechargeRate * Time.deltaTime);
+        }
+    }
+
     void CameraLook()
     {
         transform.Rotate(Vector3.up * lookInput.x * sentivity);
@@ -208,7 +225,7 @@ public class FPS_Controller : MonoBehaviour
         float bobX = Mathf.Cos(timer * 0.5f) * bobSideAmount;
 
         Vector3 newPos = camHolder.transform.localPosition;
-        newPos.y = defaultYPos + _crouchYOffset + bobY;
+        newPos.y = defaultYPos + bobY;
         newPos.x = defaultXPos + bobX;
         camHolder.transform.localPosition = newPos;
 
@@ -221,7 +238,7 @@ public class FPS_Controller : MonoBehaviour
         timer = 0;
 
         Vector3 pos = camHolder.transform.localPosition;
-        pos.y = Mathf.Lerp(pos.y, defaultYPos + _crouchYOffset, Time.deltaTime * 5f);
+        pos.y = Mathf.Lerp(pos.y, defaultYPos, Time.deltaTime * 5f);
         pos.x = Mathf.Lerp(pos.x, defaultXPos, Time.deltaTime * 5f);
         camHolder.transform.localPosition = pos;
 
@@ -255,15 +272,6 @@ public class FPS_Controller : MonoBehaviour
     {
         if (anim == null || !anim.gameObject.activeInHierarchy) return;
         anim.SetBool("isWalking", moveInput.magnitude > 0.01f);
-        anim.SetBool("isCrouching", IsCrouching);
-        anim.SetBool("isSprinting", isSprinting);
-    }
-
-    void ApplyCrouchCollider(bool crouching)
-    {
-        if (capsule == null) return;
-        capsule.height = crouching ? crouchColliderHeight : _standColliderHeight;
-        capsule.center = new Vector3(0, crouching ? crouchColliderCenterY : _standColliderCenterY, 0);
     }
 
     #region Input Methods
@@ -282,66 +290,14 @@ public class FPS_Controller : MonoBehaviour
     public void OnCrouch(InputAction.CallbackContext context)
     {
         if (IsAnyBlocker()) return;
-        if (!context.performed) return;
-
-        if (IsCrouching)
-        {
-            IsCrouching = false;
-            _targetCrouchYOffset = 0f;
-            ApplyCrouchCollider(false);
-        }
-        else
-        {
-            IsCrouching = true;
-            isSprinting = false;
-            _pendingSprint = false;
-            _targetCrouchYOffset = crouchCamOffset;
-            ApplyCrouchCollider(true);
-        }
+        if (context.performed) IsCrouching = !IsCrouching;
     }
 
     public void OnSprint(InputAction.CallbackContext context)
     {
         if (IsAnyBlocker()) { isSprinting = false; return; }
-
-        if (context.performed)
-        {
-            if (!IsCrouching)
-            {
-                isSprinting = true;
-            }
-            else if (!_isStandingUp)
-            {
-                // Agachado intentando correr: primero se levanta, luego corre
-                StartCoroutine(StandUpThenSprint());
-            }
-        }
-
-        if (context.canceled)
-        {
-            isSprinting = false;
-            _pendingSprint = false;
-        }
-    }
-
-    IEnumerator StandUpThenSprint()
-    {
-        _isStandingUp = true;
-        _pendingSprint = true;
-
-        // Iniciar transición de pie
-        IsCrouching = false;
-        _targetCrouchYOffset = 0f;
-        ApplyCrouchCollider(false);
-
-        // Esperar la duración de la transición de agacharse
-        yield return new WaitForSeconds(crouchTransitionTime);
-
-        _isStandingUp = false;
-
-        // Solo correr si el jugador aún mantiene pulsado el botón de sprint
-        if (_pendingSprint)
-            isSprinting = true;
+        if (context.performed && !IsCrouching && CanSprint) isSprinting = true;
+        if (context.canceled) isSprinting = false;
     }
 
     public void OnJump(InputAction.CallbackContext context)
