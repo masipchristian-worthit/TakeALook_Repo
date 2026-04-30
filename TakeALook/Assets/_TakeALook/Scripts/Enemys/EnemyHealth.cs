@@ -80,7 +80,7 @@ public class EnemyHealth : MonoBehaviour
         CancelInvoke(nameof(ResetMat));
 
         if (isBull) _ai?.OnKilledByBullBullet();
-        else _ai?.OnKilledByNormalBullet();
+        else        _ai?.OnKilledByNormalBullet();
     }
 
     void ResetMat()

@@ -17,6 +17,7 @@ public class GunSystem : MonoBehaviour
     [SerializeField] GameObject arms;
     [SerializeField] private float drawCooldown = 0.6f;
     [SerializeField] private float reloadTime = 1.5f;
+    [SerializeField] private float inspectTime = 1.5f;
     private bool _isTransitioning = false;
 
     [Header("General References")]
@@ -184,19 +185,6 @@ public class GunSystem : MonoBehaviour
 
     private void Update()
     {
-        bool uiBlocked = UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen();
-
-        if (uiBlocked)
-        {
-            _scrollBuffer.Clear();
-            return;
-        }
-
-        if (_isGunDrawn && !_isShooting && !_isReloading && _canSwap && !_masterActionLock)
-        {
-            ProcessScrollInput();
-            ProcessScrollBuffer();
-        }
     }
 
     #region Helpers - Renderers + Input Block
@@ -302,9 +290,10 @@ public class GunSystem : MonoBehaviour
     {
         if (_scrollBuffer.Count == 0 || Time.time < _nextSwapAllowedTime) return;
         int dir = _scrollBuffer.Dequeue();
-        int next = ((int)currentBullet + dir + 3) % 3;
-        SetBulletType((BulletType)next);
-        _nextSwapAllowedTime = Time.time + weaponSwapCooldown;
+        BulletType next = (BulletType)(((int)currentBullet + dir + 3) % 3);
+        if (next == currentBullet) return;
+        _nextSwapAllowedTime = Time.time + weaponSwapCooldown + inspectTime;
+        StartCoroutine(SwapViaInspectRoutine(next));
     }
     #endregion
 
@@ -353,11 +342,7 @@ public class GunSystem : MonoBehaviour
         if (IsInputBlocked()) return;
         if (!_isGunDrawn || _isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
 
-        if (anim != null && anim.isActiveAndEnabled)
-        {
-            anim.ResetTrigger("Inspect");
-            anim.SetTrigger("Inspect");
-        }
+        StartCoroutine(InspectAndSwapRoutine());
     }
 
     public void OnFlashlight(InputAction.CallbackContext context)
@@ -596,29 +581,126 @@ public class GunSystem : MonoBehaviour
         Vector3 direction = fpsCam.transform.forward;
         direction.x += Random.Range(-_activeStats.spread, _activeStats.spread);
         direction.y += Random.Range(-_activeStats.spread, _activeStats.spread);
+        direction.Normalize();
 
-        if (Physics.Raycast(fpsCam.transform.position, direction, out _hit, _activeStats.range, impactLayer))
+        bool isBullBullet = currentBullet == BulletType.Bull;
+
+        RaycastHit[] hits = Physics.RaycastAll(fpsCam.transform.position, direction, _activeStats.range, impactLayer);
+        if (hits.Length == 0) return;
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+
+        if (currentBullet == BulletType.Eagle)
+            ProcessPiercingHits(hits, isBullBullet);
+        else
+            ProcessStoppingHit(hits, isBullBullet);
+    }
+
+    // Wolf/Bull: para en el primer hit (headshot, body, o pared). Solo procesa ese hit.
+    private void ProcessStoppingHit(RaycastHit[] hits, bool isBullBullet)
+    {
+        foreach (var hit in hits)
         {
-            if (_activeStats.impactEffect)
-                Instantiate(_activeStats.impactEffect, _hit.point, Quaternion.LookRotation(_hit.normal));
-
-            bool isBullBullet = currentBullet == BulletType.Bull;
-
-            // Headshot: si el collider impactado tiene HeadshotCollider, aplicar multiplicador
-            var headshot = _hit.collider.GetComponent<HeadshotCollider>();
-            if (headshot != null)
+            // Headshot hit - process only this
+            var hs = hit.collider.GetComponent<HeadshotCollider>();
+            if (hs != null && hs.Target != null)
             {
-                headshot.ApplyDamage(_activeStats.damage, isBullBullet);
+                if (_activeStats.impactEffect)
+                    Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                hs.ApplyDamage(_activeStats.damage, isBullBullet);
                 return;
             }
 
-            if (_hit.collider.CompareTag("Enemy"))
+            // Enemy body hit - process only this
+            if (hit.collider.CompareTag("Enemy"))
             {
-                var health = _hit.collider.GetComponent<EnemyHealth>();
-                if (health == null) health = _hit.collider.GetComponentInParent<EnemyHealth>();
-                if (health != null) health.TakeDamage(_activeStats.damage, isBullBullet);
+                var health = hit.collider.GetComponent<EnemyHealth>() ?? hit.collider.GetComponentInParent<EnemyHealth>();
+                if (health != null)
+                {
+                    if (_activeStats.impactEffect)
+                        Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                    health.TakeDamage(_activeStats.damage, isBullBullet);
+                    return;
+                }
             }
+
+            // Wall hit - stop here
+            if (_activeStats.impactEffect)
+                Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+            return;
         }
+    }
+
+    // Eagle: atraviesa enemigos, cada uno recibe daño una sola vez (headshot O body, no ambos). Para en paredes.
+    private void ProcessPiercingHits(RaycastHit[] hits, bool isBullBullet)
+    {
+        var damagedEnemies = new HashSet<EnemyHealth>();
+
+        foreach (var hit in hits)
+        {
+            // Headshot hit
+            var hs = hit.collider.GetComponent<HeadshotCollider>();
+            if (hs != null && hs.Target != null && !damagedEnemies.Contains(hs.Target))
+            {
+                damagedEnemies.Add(hs.Target);
+                if (_activeStats.impactEffect)
+                    Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                hs.ApplyDamage(_activeStats.damage, isBullBullet);
+                continue;
+            }
+
+            // Enemy body hit
+            if (hit.collider.CompareTag("Enemy"))
+            {
+                var health = hit.collider.GetComponent<EnemyHealth>() ?? hit.collider.GetComponentInParent<EnemyHealth>();
+                if (health != null && !damagedEnemies.Contains(health))
+                {
+                    damagedEnemies.Add(health);
+                    if (_activeStats.impactEffect)
+                        Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                    health.TakeDamage(_activeStats.damage, isBullBullet);
+                }
+                continue;
+            }
+
+            // Wall hit - stop
+            if (_activeStats.impactEffect)
+                Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+            return;
+        }
+    }
+
+    // Swap de bala: dispara animación Inspect y aplica el cambio al terminar
+    private IEnumerator SwapViaInspectRoutine(BulletType targetType)
+    {
+        _canSwap = false;
+        _canShoot = false;
+        _canReload = false;
+        _masterActionLock = true;
+
+        float waitTime = inspectTime;
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Inspect");
+            anim.SetTrigger("Inspect");
+            anim.Update(0f);
+
+            AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+            if (stateInfo.length > 0.05f)
+                waitTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
+        }
+
+        yield return new WaitForSeconds(waitTime);
+
+        currentBullet = targetType;
+        UpdateActiveStats();
+        AudioManager.Instance?.PlayUI(swapSfxId);
+
+        _canSwap = true;
+        _canShoot = true;
+        _canReload = true;
+        _masterActionLock = false;
     }
 
     private IEnumerator SwapCooldownRoutine()
@@ -626,6 +708,40 @@ public class GunSystem : MonoBehaviour
         _canSwap = false;
         yield return new WaitForSeconds(weaponSwapCooldown);
         _canSwap = true;
+    }
+
+    private IEnumerator InspectAndSwapRoutine()
+    {
+        _canSwap = false;
+        _canShoot = false;
+        _canReload = false;
+        _masterActionLock = true;
+
+        float waitTime = inspectTime;
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Inspect");
+            anim.SetTrigger("Inspect");
+            anim.Update(0f);
+
+            AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+            if (stateInfo.length > 0.05f)
+                waitTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
+        }
+
+        yield return new WaitForSeconds(waitTime);
+
+        BulletType next = (BulletType)(((int)currentBullet + 1) % 3);
+        currentBullet = next;
+        UpdateActiveStats();
+        AudioManager.Instance?.PlayUI(swapSfxId);
+
+        _canSwap = true;
+        _canShoot = true;
+        _canReload = true;
+        _masterActionLock = false;
     }
     #endregion
 

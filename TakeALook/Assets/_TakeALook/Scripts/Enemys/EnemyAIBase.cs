@@ -96,11 +96,11 @@ public class EnemyAIBase : MonoBehaviour
 
     // Animator hashes
     static readonly int H_IsPatrolling = Animator.StringToHash("isPatrolling");
-    static readonly int H_IsChasing = Animator.StringToHash("isChasing");
-    static readonly int H_IsAttacking = Animator.StringToHash("isAttacking");
-    static readonly int H_Roar = Animator.StringToHash("Roar");
-    static readonly int H_Shot = Animator.StringToHash("Shot");
-    static readonly int H_Death = Animator.StringToHash("Death");
+    static readonly int H_IsChasing    = Animator.StringToHash("isChasing");
+    static readonly int H_IsAttacking  = Animator.StringToHash("isAttacking");
+    static readonly int H_Roar         = Animator.StringToHash("Roar");
+    static readonly int H_Shot         = Animator.StringToHash("Shot");
+    static readonly int H_Death        = Animator.StringToHash("Death");
     static readonly int H_Electrocuted = Animator.StringToHash("Electrocuted");
 
     // Public API
@@ -185,10 +185,10 @@ public class EnemyAIBase : MonoBehaviour
         switch (_state)
         {
             case EnemyState.Patrolling: DoPatrol(); break;
-            case EnemyState.Chasing: DoChase(); break;
-            case EnemyState.Rushing: DoRush(); break;
-            case EnemyState.Attacking: DoAttack(); break;
-            case EnemyState.Hiding: DoFlee(); break;
+            case EnemyState.Chasing:    DoChase();  break;
+            case EnemyState.Rushing:    DoRush();   break;
+            case EnemyState.Attacking:  DoAttack(); break;
+            case EnemyState.Hiding:     DoFlee();   break;
         }
     }
 
@@ -397,8 +397,8 @@ public class EnemyAIBase : MonoBehaviour
         _shootEventFired = true;
         FireProjectile();
     }
-    public void OnRoarFinishedAnimationEvent() => _roarFinishedEvent = true;
-    public void OnHitForwardFinishedAnimationEvent() => _hitForwardFinishedEvent = true;
+    public void OnRoarFinishedAnimationEvent()        => _roarFinishedEvent = true;
+    public void OnHitForwardFinishedAnimationEvent()  => _hitForwardFinishedEvent = true;
     public void OnHitRecoveryFinishedAnimationEvent() => _hitRecoveryFinishedEvent = true;
 
     public void OnHitByNormalBullet()
