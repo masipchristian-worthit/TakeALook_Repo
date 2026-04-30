@@ -1,42 +1,69 @@
 using UnityEngine;
 
+/// <summary>
+/// Gestiona el ciclo de vida de un charco de sangre:
+/// crece al recibir impactos de partículas, cambia de color (rojo → marrón oscuro)
+/// y desaparece con fade al final de su vida.
+///
+/// Notas:
+///  - PropertyIDs cacheados (string lookups solo una vez por clase).
+///  - Antes hacía SetActive(false) al final, lo que dejaba GameObjects "fantasma" en
+///    la escena. Ahora se DESTRUYE limpiamente.
+///  - Se asegura un Collider para que BloodCollisionHandler pueda detectarlo y crecerlo.
+/// </summary>
+[RequireComponent(typeof(Renderer))]
 public class BloodPuddle : MonoBehaviour
 {
-    public float growAmount = 0.25f;
-    public float maxScale = 3f;
-    public float lifeTime = 12f;
-    public Color freshColor = Color.red;
-    public Color driedColor = new Color(0.1f, 0, 0, 1);
+    [SerializeField] float growAmount = 0.25f;
+    [SerializeField] float maxScale = 3f;
+    [SerializeField] float lifeTime = 12f;
+    [SerializeField] Color freshColor = Color.red;
+    [SerializeField] Color driedColor = new Color(0.1f, 0f, 0f, 1f);
 
-    private Renderer rend;
-    private MaterialPropertyBlock block;
-    private float timer;
-    private float scale = 0.4f;
+    private static readonly int ColorProp = Shader.PropertyToID("_Color");
+    private static readonly int CutoffProp = Shader.PropertyToID("_Cutoff");
 
-    void Awake()
+    private Renderer _rend;
+    private MaterialPropertyBlock _block;
+    private float _timer;
+    private float _scale = 0.4f;
+
+    private void Awake()
     {
-        rend = GetComponent<Renderer>();
-        block = new MaterialPropertyBlock();
-        transform.localScale = new Vector3(scale, scale, 1f);
+        _rend = GetComponent<Renderer>();
+        _block = new MaterialPropertyBlock();
+        transform.localScale = new Vector3(_scale, _scale, 1f);
+
+        // Garantizar collider para que BloodCollisionHandler pueda detectarlo y crecerlo.
+        if (GetComponent<Collider>() == null)
+        {
+            var col = gameObject.AddComponent<SphereCollider>();
+            col.isTrigger = true;
+            col.radius = 0.5f;
+        }
     }
 
     public void Grow()
     {
-        scale = Mathf.Min(scale + growAmount, maxScale);
-        transform.localScale = new Vector3(scale, scale, 1f);
-        timer = Mathf.Max(0, timer - 1.5f);
+        _scale = Mathf.Min(_scale + growAmount, maxScale);
+        transform.localScale = new Vector3(_scale, _scale, 1f);
+        _timer = Mathf.Max(0f, _timer - 1.5f);
     }
 
-    void Update()
+    private void Update()
     {
-        timer += Time.deltaTime;
-        float p = Mathf.Clamp01(timer / lifeTime);
+        if (_rend == null) return;
 
-        rend.GetPropertyBlock(block);
-        block.SetColor("_Color", Color.Lerp(freshColor, driedColor, p));
-        block.SetFloat("_Cutoff", (p > 0.7f) ? Mathf.Lerp(0.1f, 1f, (p - 0.7f) / 0.3f) : 0.1f);
-        rend.SetPropertyBlock(block);
+        _timer += Time.deltaTime;
+        float t = Mathf.Clamp01(_timer / lifeTime);
 
-        if (p >= 1f) gameObject.SetActive(false);
+        _rend.GetPropertyBlock(_block);
+        _block.SetColor(ColorProp, Color.Lerp(freshColor, driedColor, t));
+        _block.SetFloat(CutoffProp, t > 0.7f
+            ? Mathf.Lerp(0.1f, 1f, (t - 0.7f) / 0.3f)
+            : 0.1f);
+        _rend.SetPropertyBlock(_block);
+
+        if (t >= 1f) Destroy(gameObject);
     }
 }

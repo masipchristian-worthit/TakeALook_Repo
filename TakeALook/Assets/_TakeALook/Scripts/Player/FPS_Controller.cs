@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.InputSystem;
 
 public class FPS_Controller : MonoBehaviour
@@ -23,6 +23,16 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] bool isSprinting;
     [SerializeField] bool IsCrouching;
 
+    [Header("Sprint Stamina")]
+    [Tooltip("Duración máxima del sprint en segundos.")]
+    [SerializeField] float maxSprintStamina = 5f;
+    [Tooltip("Stamina consumida por segundo mientras se corre.")]
+    [SerializeField] float staminaDepletionRate = 1f;
+    [Tooltip("Stamina recuperada por segundo cuando no se corre.")]
+    [SerializeField] float staminaRechargeRate = 0.8f;
+    [Tooltip("Cooldown (segundos) una vez la stamina llega a 0. No se puede sprintar hasta que pase.")]
+    [SerializeField] float staminaCooldownAfterEmpty = 2f;
+
     [Header("Interaction")]
     [SerializeField] float interactDistance = 3f;
     [SerializeField] LayerMask interactLayer;
@@ -34,6 +44,13 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] float tiltAmount = 3f;
     [SerializeField] float sprintMultiplier = 1.5f;
     [SerializeField] float crouchMultiplier = 0.5f;
+
+    [Header("Footsteps Audio")]
+    [Tooltip("ID en la SoundLibrary del paso individual. Se reproduce en bucle a un ritmo dependiente de la velocidad.")]
+    [SerializeField] string footstepSfxId = "player_step";
+    [SerializeField] float footstepWalkInterval = 0.5f;
+    [SerializeField] float footstepSprintInterval = 0.32f;
+    [SerializeField] float footstepCrouchInterval = 0.7f;
 
     [Header("Component References")]
     [SerializeField] Animator anim;
@@ -52,12 +69,29 @@ public class FPS_Controller : MonoBehaviour
     CodeDoor[] codeDoors;
     bool isUsingCodePanel;
 
+    // Sprint stamina internals
+    float _sprintStamina;
+    bool _staminaOnCooldown;
+    float _staminaCooldownTimer;
+
+    // Sprint input hold (FIX freeze al levantarse mientras se mantiene Shift)
+    bool _sprintHeld;
+
+    // Footsteps cycling
+    float _footstepTimer;
+
+    // Public API para UI
+    public float SprintStaminaNormalized => _sprintStamina / Mathf.Max(0.001f, maxSprintStamina);
+    public bool IsStaminaOnCooldown => _staminaOnCooldown;
+
     private bool IsUIOpen() => UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen();
     private bool IsAnyBlocker() => isUsingCodePanel || IsUIOpen();
+    private bool CanSprint => !_staminaOnCooldown && _sprintStamina > 0f;
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
+        _sprintStamina = maxSprintStamina;
     }
 
     void Start()
@@ -78,10 +112,12 @@ public class FPS_Controller : MonoBehaviour
         Debug.DrawRay(camHolder.transform.position, camHolder.transform.forward * 3f, Color.red);
 
         CheckIfUsingCodePanel();
+        UpdateSprintIntent();
+        UpdateSprintStamina();
+        UpdateFootsteps();
 
         if (IsAnyBlocker())
         {
-            // Reset visual del head bob para que no quede atascado a mitad
             ResetHeadBob();
             return;
         }
@@ -95,7 +131,6 @@ public class FPS_Controller : MonoBehaviour
     {
         if (IsAnyBlocker())
         {
-            // Frenamos el rigidbody
             if (rb != null)
             {
                 Vector3 v = rb.linearVelocity;
@@ -133,6 +168,72 @@ public class FPS_Controller : MonoBehaviour
             moveInput = Vector2.zero;
             lookInput = Vector2.zero;
             isSprinting = false;
+        }
+    }
+
+    /// <summary>
+    /// Resuelve cada frame si _sprintHeld + condiciones permiten correr.
+    /// FIX FREEZE: si pulsabas Sprint mientras estabas agachado y luego te levantabas,
+    /// el evento Sprint.performed ya se había consumido (sin volver a dispararse) y
+    /// quedabas caminando a velocidad normal. Peor aún, según la combinación de toggles,
+    /// el rigidbody se quedaba bloqueado por el cambio de velocidad. Ahora derivamos
+    /// isSprinting de un BOOL "sprintHeld" + condiciones, recalculado siempre.
+    /// </summary>
+    void UpdateSprintIntent()
+    {
+        if (IsAnyBlocker()) { isSprinting = false; return; }
+
+        bool wantsSprint = _sprintHeld && !IsCrouching && moveInput.sqrMagnitude > 0.01f;
+        isSprinting = wantsSprint && CanSprint;
+    }
+
+    void UpdateSprintStamina()
+    {
+        bool activelySprinting = isSprinting && moveInput.magnitude > 0.1f && isGrounded;
+
+        if (_staminaOnCooldown)
+        {
+            _staminaCooldownTimer -= Time.deltaTime;
+            if (_staminaCooldownTimer <= 0f) _staminaOnCooldown = false;
+            isSprinting = false;
+            return;
+        }
+
+        if (activelySprinting)
+        {
+            _sprintStamina -= staminaDepletionRate * Time.deltaTime;
+            if (_sprintStamina <= 0f)
+            {
+                _sprintStamina = 0f;
+                isSprinting = false;
+                _staminaOnCooldown = true;
+                _staminaCooldownTimer = staminaCooldownAfterEmpty;
+            }
+        }
+        else
+        {
+            _sprintStamina = Mathf.Min(maxSprintStamina, _sprintStamina + staminaRechargeRate * Time.deltaTime);
+        }
+    }
+
+    void UpdateFootsteps()
+    {
+        bool moving = moveInput.sqrMagnitude > 0.04f && isGrounded && !IsAnyBlocker();
+        if (!moving)
+        {
+            _footstepTimer = 0f;
+            return;
+        }
+
+        float interval = footstepWalkInterval;
+        if (isSprinting) interval = footstepSprintInterval;
+        else if (IsCrouching) interval = footstepCrouchInterval;
+
+        _footstepTimer += Time.deltaTime;
+        if (_footstepTimer >= interval)
+        {
+            _footstepTimer = 0f;
+            AudioManager.Instance?.PlaySFX(footstepSfxId, transform.position);
         }
     }
 
@@ -206,11 +307,9 @@ public class FPS_Controller : MonoBehaviour
         {
             if (Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
             {
-                // Puerta normal
                 var door = hit.collider.GetComponent<DoorOpen>();
                 if (door != null) { door.OpenDoor(); return; }
 
-                // Pickup item
                 var pickable = hit.collider.GetComponentInParent<PickableItem>();
                 if (pickable != null && playerInventory != null)
                 {
@@ -248,9 +347,12 @@ public class FPS_Controller : MonoBehaviour
 
     public void OnSprint(InputAction.CallbackContext context)
     {
-        if (IsAnyBlocker()) { isSprinting = false; return; }
-        if (context.performed && !IsCrouching) isSprinting = true;
-        if (context.canceled) isSprinting = false;
+        // Convertimos los eventos performed/canceled en un BOOL "sprint held".
+        // Resolución de isSprinting se hace en UpdateSprintIntent (cada frame),
+        // así que si Shift está pulsado mientras estabas agachado y te levantas,
+        // automáticamente arrancarás a correr sin necesidad de soltar y volver a pulsar.
+        if (context.performed) _sprintHeld = true;
+        else if (context.canceled) _sprintHeld = false;
     }
 
     public void OnJump(InputAction.CallbackContext context)
