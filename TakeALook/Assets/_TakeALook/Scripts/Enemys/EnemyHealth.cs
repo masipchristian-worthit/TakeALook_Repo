@@ -9,25 +9,25 @@ public class EnemyHealth : MonoBehaviour
     [Header("Hit Feedback")]
     [SerializeField] Material damagedMat;
 
-    [Header("Death Fade")]
-    [Tooltip("Segundos de espera tras acabar la animación de muerte antes del fade.")]
-    [SerializeField] float deathWaitBeforeFade = 0.5f;
-    [Tooltip("Duración en segundos del dissolve/fade granulado.")]
-    [SerializeField] float fadeDuration = 2f;
-    [Tooltip("Nombre del float de dissolve en el shader (e.g. _DissolveAmount). Fallback: alpha.")]
-    [SerializeField] string dissolveProperty = "_DissolveAmount";
-
     [Header("Refs")]
     [Tooltip("Renderers de la malla del enemigo. Se auto-detectan si se dejan vacíos.")]
     [SerializeField] Renderer[] meshRenderers;
 
+    [Header("Audio")]
+    [SerializeField] string sfxHeadshotId  = "enemy_headshot";
+    [SerializeField] string sfxBodyshotId  = "enemy_bodyshot";
+    [SerializeField] string sfxDeathId     = "enemy_death";
+    [SerializeField] string sfxDeathBullId = "enemy_death_electric";
+
     int _currentHealth;
     bool _isDead;
+    bool _isCorpse;
     Material _baseMat;
     Renderer _firstRenderer;
     EnemyAIBase _ai;
 
     public float HealthPercent => _isDead ? 0f : (float)_currentHealth / Mathf.Max(1, maxHealth);
+    public bool IsDead => _isDead;
 
     void Awake()
     {
@@ -37,20 +37,23 @@ public class EnemyHealth : MonoBehaviour
         if (meshRenderers == null || meshRenderers.Length == 0)
             meshRenderers = GetComponentsInChildren<Renderer>();
 
-        if (meshRenderers.Length > 0)
+        if (meshRenderers != null && meshRenderers.Length > 0)
         {
             _firstRenderer = meshRenderers[0];
-            _baseMat = _firstRenderer.material;
+            _baseMat = _firstRenderer.sharedMaterial;
         }
     }
 
-    // isBullBullet = true mata de un golpe con animación Electrocuted
+    /// <summary>
+    /// Aplica daño normal de bala (cuerpo). isBullBullet = true mata de un golpe con animación Electrocuted.
+    /// </summary>
     public void TakeDamage(int damage, bool isBullBullet = false)
     {
         if (_isDead) return;
 
         if (isBullBullet)
         {
+            AudioManager.Instance?.PlaySFX(sfxBodyshotId, transform.position);
             Kill(isBull: true);
             return;
         }
@@ -61,11 +64,44 @@ public class EnemyHealth : MonoBehaviour
         if (damagedMat != null && _firstRenderer != null)
         {
             _firstRenderer.material = damagedMat;
+            CancelInvoke(nameof(ResetMat));
+            Invoke(nameof(ResetMat), 0.1f);
+        }
+
+        AudioManager.Instance?.PlaySFX(sfxBodyshotId, transform.position);
+
+        _currentHealth = Mathf.Max(0, _currentHealth - damage);
+
+        if (_currentHealth <= 0)
+            Kill(isBull: false);
+        else
+            _ai?.OnHitByNormalBullet();
+    }
+
+    /// <summary>
+    /// Llamado por HeadshotCollider. Reproduce sonido de headshot y aplica daño multiplicado.
+    /// </summary>
+    public void TakeHeadshotDamage(int damage, bool isBullBullet)
+    {
+        if (_isDead) return;
+        AudioManager.Instance?.PlaySFX(sfxHeadshotId, transform.position);
+
+        if (isBullBullet)
+        {
+            Kill(isBull: true);
+            return;
+        }
+
+        if (_ai != null && _ai.IsInvulnerable) return;
+
+        if (damagedMat != null && _firstRenderer != null)
+        {
+            _firstRenderer.material = damagedMat;
+            CancelInvoke(nameof(ResetMat));
             Invoke(nameof(ResetMat), 0.1f);
         }
 
         _currentHealth = Mathf.Max(0, _currentHealth - damage);
-
         if (_currentHealth <= 0)
             Kill(isBull: false);
         else
@@ -79,6 +115,8 @@ public class EnemyHealth : MonoBehaviour
         _currentHealth = 0;
         CancelInvoke(nameof(ResetMat));
 
+        AudioManager.Instance?.PlaySFX(isBull ? sfxDeathBullId : sfxDeathId, transform.position);
+
         if (isBull) _ai?.OnKilledByBullBullet();
         else        _ai?.OnKilledByNormalBullet();
     }
@@ -89,46 +127,48 @@ public class EnemyHealth : MonoBehaviour
             _firstRenderer.material = _baseMat;
     }
 
-    // Llamado por EnemyAIBase al terminar la animación de muerte
-    public void StartDeathFade() => StartCoroutine(FadeOut());
+    /// <summary>
+    /// API antigua que se conservaba para compatibilidad. Ya no hace fade,
+    /// simplemente delega en MarkAsCorpse para no romper llamadas externas.
+    /// </summary>
+    public void StartDeathFade() => MarkAsCorpse();
 
-    IEnumerator FadeOut()
+    /// <summary>
+    /// Convierte el enemigo en cadáver permanente y lo persiste entre escenas.
+    /// Lo llama EnemyAIBase al terminar la animación de muerte.
+    /// </summary>
+    public void MarkAsCorpse()
     {
-        yield return new WaitForSeconds(deathWaitBeforeFade);
+        if (_isCorpse) return;
+        _isCorpse = true;
 
-        // Crear instancias de material por instancia para no afectar otros enemigos
-        Material[] mats = new Material[meshRenderers.Length];
-        for (int i = 0; i < meshRenderers.Length; i++)
+        // Quitar todo lo que pueda interferir con el gameplay tras la muerte
+        var ai = GetComponent<EnemyAIBase>();
+        if (ai != null) ai.enabled = false;
+
+        var agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
+        if (agent != null) agent.enabled = false;
+
+        var rb = GetComponent<Rigidbody>();
+        if (rb != null)
         {
-            if (meshRenderers[i] != null)
-                mats[i] = meshRenderers[i].material; // crea instancia
+            rb.isKinematic = true;
+#if UNITY_6000_0_OR_NEWER
+            rb.linearVelocity = Vector3.zero;
+#else
+            rb.velocity = Vector3.zero;
+#endif
+            rb.angularVelocity = Vector3.zero;
         }
 
-        float elapsed = 0f;
-        while (elapsed < fadeDuration)
+        // El Animator se queda fijo en el último frame de la death animation
+        var anim = GetComponentInChildren<Animator>();
+        if (anim != null)
         {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / fadeDuration);
-
-            for (int i = 0; i < mats.Length; i++)
-            {
-                if (mats[i] == null) continue;
-
-                if (mats[i].HasProperty(dissolveProperty))
-                {
-                    mats[i].SetFloat(dissolveProperty, t);
-                }
-                else
-                {
-                    // Fallback: fade de alpha (requiere modo Transparent en el material)
-                    Color c = mats[i].color;
-                    c.a = 1f - t;
-                    mats[i].color = c;
-                }
-            }
-            yield return null;
+            anim.speed = 0f;
         }
 
-        Destroy(gameObject);
+        // Persistir el cadáver entre escenas
+        EnemyCorpseManager.RegisterCorpse(gameObject);
     }
 }

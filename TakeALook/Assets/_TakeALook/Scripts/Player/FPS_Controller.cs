@@ -45,6 +45,13 @@ public class FPS_Controller : MonoBehaviour
     [SerializeField] float sprintMultiplier = 1.5f;
     [SerializeField] float crouchMultiplier = 0.5f;
 
+    [Header("Footsteps Audio")]
+    [Tooltip("ID en la SoundLibrary del paso individual. Se reproduce en bucle a un ritmo dependiente de la velocidad.")]
+    [SerializeField] string footstepSfxId = "player_step";
+    [SerializeField] float footstepWalkInterval = 0.5f;
+    [SerializeField] float footstepSprintInterval = 0.32f;
+    [SerializeField] float footstepCrouchInterval = 0.7f;
+
     [Header("Component References")]
     [SerializeField] Animator anim;
     [SerializeField] PlayerInventory playerInventory;
@@ -66,6 +73,12 @@ public class FPS_Controller : MonoBehaviour
     float _sprintStamina;
     bool _staminaOnCooldown;
     float _staminaCooldownTimer;
+
+    // Sprint input hold (FIX freeze al levantarse mientras se mantiene Shift)
+    bool _sprintHeld;
+
+    // Footsteps cycling
+    float _footstepTimer;
 
     // Public API para UI
     public float SprintStaminaNormalized => _sprintStamina / Mathf.Max(0.001f, maxSprintStamina);
@@ -99,7 +112,9 @@ public class FPS_Controller : MonoBehaviour
         Debug.DrawRay(camHolder.transform.position, camHolder.transform.forward * 3f, Color.red);
 
         CheckIfUsingCodePanel();
+        UpdateSprintIntent();
         UpdateSprintStamina();
+        UpdateFootsteps();
 
         if (IsAnyBlocker())
         {
@@ -156,6 +171,22 @@ public class FPS_Controller : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Resuelve cada frame si _sprintHeld + condiciones permiten correr.
+    /// FIX FREEZE: si pulsabas Sprint mientras estabas agachado y luego te levantabas,
+    /// el evento Sprint.performed ya se había consumido (sin volver a dispararse) y
+    /// quedabas caminando a velocidad normal. Peor aún, según la combinación de toggles,
+    /// el rigidbody se quedaba bloqueado por el cambio de velocidad. Ahora derivamos
+    /// isSprinting de un BOOL "sprintHeld" + condiciones, recalculado siempre.
+    /// </summary>
+    void UpdateSprintIntent()
+    {
+        if (IsAnyBlocker()) { isSprinting = false; return; }
+
+        bool wantsSprint = _sprintHeld && !IsCrouching && moveInput.sqrMagnitude > 0.01f;
+        isSprinting = wantsSprint && CanSprint;
+    }
+
     void UpdateSprintStamina()
     {
         bool activelySprinting = isSprinting && moveInput.magnitude > 0.1f && isGrounded;
@@ -164,7 +195,7 @@ public class FPS_Controller : MonoBehaviour
         {
             _staminaCooldownTimer -= Time.deltaTime;
             if (_staminaCooldownTimer <= 0f) _staminaOnCooldown = false;
-            if (isSprinting) isSprinting = false;
+            isSprinting = false;
             return;
         }
 
@@ -182,6 +213,27 @@ public class FPS_Controller : MonoBehaviour
         else
         {
             _sprintStamina = Mathf.Min(maxSprintStamina, _sprintStamina + staminaRechargeRate * Time.deltaTime);
+        }
+    }
+
+    void UpdateFootsteps()
+    {
+        bool moving = moveInput.sqrMagnitude > 0.04f && isGrounded && !IsAnyBlocker();
+        if (!moving)
+        {
+            _footstepTimer = 0f;
+            return;
+        }
+
+        float interval = footstepWalkInterval;
+        if (isSprinting) interval = footstepSprintInterval;
+        else if (IsCrouching) interval = footstepCrouchInterval;
+
+        _footstepTimer += Time.deltaTime;
+        if (_footstepTimer >= interval)
+        {
+            _footstepTimer = 0f;
+            AudioManager.Instance?.PlaySFX(footstepSfxId, transform.position);
         }
     }
 
@@ -295,9 +347,12 @@ public class FPS_Controller : MonoBehaviour
 
     public void OnSprint(InputAction.CallbackContext context)
     {
-        if (IsAnyBlocker()) { isSprinting = false; return; }
-        if (context.performed && !IsCrouching && CanSprint) isSprinting = true;
-        if (context.canceled) isSprinting = false;
+        // Convertimos los eventos performed/canceled en un BOOL "sprint held".
+        // Resolución de isSprinting se hace en UpdateSprintIntent (cada frame),
+        // así que si Shift está pulsado mientras estabas agachado y te levantas,
+        // automáticamente arrancarás a correr sin necesidad de soltar y volver a pulsar.
+        if (context.performed) _sprintHeld = true;
+        else if (context.canceled) _sprintHeld = false;
     }
 
     public void OnJump(InputAction.CallbackContext context)

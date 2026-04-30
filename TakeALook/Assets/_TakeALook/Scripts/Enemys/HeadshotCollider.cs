@@ -2,7 +2,8 @@ using UnityEngine;
 
 // Asignar este script al GameObject "HeadShot Collider" del enemigo.
 // El GunSystem detecta este componente al hacer raycast y aplica el multiplicador
-// de daño antes de avisar al EnemyHealth correspondiente.
+// de daño antes de avisar al EnemyHealth correspondiente. EnemyHealth se encarga
+// del sonido de headshot.
 [RequireComponent(typeof(Collider))]
 public class HeadshotCollider : MonoBehaviour
 {
@@ -26,6 +27,6 @@ public class HeadshotCollider : MonoBehaviour
     {
         if (target == null) return;
         int finalDamage = Mathf.Max(0, Mathf.RoundToInt(baseDamage * damageMultiplier));
-        target.TakeDamage(finalDamage, isBullBullet);
+        target.TakeHeadshotDamage(finalDamage, isBullBullet);
     }
 }

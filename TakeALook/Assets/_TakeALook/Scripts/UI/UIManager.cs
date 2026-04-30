@@ -56,6 +56,10 @@ public class UIManager : MonoBehaviour
     [SerializeField] private string openSfxId = "ui_open";
     [SerializeField] private string closeSfxId = "ui_close";
     [SerializeField] private string tabSwapSfxId = "ui_swap";
+    [Tooltip("Sonido cuando se mueve la selección dentro del carrusel (siguiente/anterior).")]
+    [SerializeField] private string moveSfxId = "ui_move";
+    [Tooltip("Sonido al confirmar / interactuar en la UI (entrar a items, etc).")]
+    [SerializeField] private string interactSfxId = "ui_interact";
     [SerializeField] private string useSfxId = "ui_use";
     [SerializeField] private string denySfxId = "ui_deny";
 
@@ -111,6 +115,7 @@ public class UIManager : MonoBehaviour
         else // Items
         {
             GetActiveCarousel()?.Previous();
+            AudioManager.Instance?.PlayUI(moveSfxId);
             if (ActiveTab == TabType.Inventory) inventoryFeed?.SyncSelectionFromCarousel();
         }
     }
@@ -126,6 +131,7 @@ public class UIManager : MonoBehaviour
         else
         {
             GetActiveCarousel()?.Next();
+            AudioManager.Instance?.PlayUI(moveSfxId);
             if (ActiveTab == TabType.Inventory) inventoryFeed?.SyncSelectionFromCarousel();
         }
     }
@@ -136,6 +142,7 @@ public class UIManager : MonoBehaviour
 
         if (Focus == FocusLevel.Tabs)
         {
+            AudioManager.Instance?.PlayUI(interactSfxId);
             SetFocus(FocusLevel.Items);
         }
         else // Items
