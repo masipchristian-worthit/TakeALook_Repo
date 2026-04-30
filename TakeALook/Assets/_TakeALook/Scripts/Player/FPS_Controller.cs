@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.InputSystem;
 
 public class FPS_Controller : MonoBehaviour
@@ -22,6 +22,16 @@ public class FPS_Controller : MonoBehaviour
     [Header("Player State Bools")]
     [SerializeField] bool isSprinting;
     [SerializeField] bool IsCrouching;
+
+    [Header("Sprint Stamina")]
+    [Tooltip("Duración máxima del sprint en segundos.")]
+    [SerializeField] float maxSprintStamina = 5f;
+    [Tooltip("Stamina consumida por segundo mientras se corre.")]
+    [SerializeField] float staminaDepletionRate = 1f;
+    [Tooltip("Stamina recuperada por segundo cuando no se corre.")]
+    [SerializeField] float staminaRechargeRate = 0.8f;
+    [Tooltip("Cooldown (segundos) una vez la stamina llega a 0. No se puede sprintar hasta que pase.")]
+    [SerializeField] float staminaCooldownAfterEmpty = 2f;
 
     [Header("Interaction")]
     [SerializeField] float interactDistance = 3f;
@@ -52,12 +62,23 @@ public class FPS_Controller : MonoBehaviour
     CodeDoor[] codeDoors;
     bool isUsingCodePanel;
 
+    // Sprint stamina internals
+    float _sprintStamina;
+    bool _staminaOnCooldown;
+    float _staminaCooldownTimer;
+
+    // Public API para UI
+    public float SprintStaminaNormalized => _sprintStamina / Mathf.Max(0.001f, maxSprintStamina);
+    public bool IsStaminaOnCooldown => _staminaOnCooldown;
+
     private bool IsUIOpen() => UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen();
     private bool IsAnyBlocker() => isUsingCodePanel || IsUIOpen();
+    private bool CanSprint => !_staminaOnCooldown && _sprintStamina > 0f;
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
+        _sprintStamina = maxSprintStamina;
     }
 
     void Start()
@@ -78,10 +99,10 @@ public class FPS_Controller : MonoBehaviour
         Debug.DrawRay(camHolder.transform.position, camHolder.transform.forward * 3f, Color.red);
 
         CheckIfUsingCodePanel();
+        UpdateSprintStamina();
 
         if (IsAnyBlocker())
         {
-            // Reset visual del head bob para que no quede atascado a mitad
             ResetHeadBob();
             return;
         }
@@ -95,7 +116,6 @@ public class FPS_Controller : MonoBehaviour
     {
         if (IsAnyBlocker())
         {
-            // Frenamos el rigidbody
             if (rb != null)
             {
                 Vector3 v = rb.linearVelocity;
@@ -133,6 +153,35 @@ public class FPS_Controller : MonoBehaviour
             moveInput = Vector2.zero;
             lookInput = Vector2.zero;
             isSprinting = false;
+        }
+    }
+
+    void UpdateSprintStamina()
+    {
+        bool activelySprinting = isSprinting && moveInput.magnitude > 0.1f && isGrounded;
+
+        if (_staminaOnCooldown)
+        {
+            _staminaCooldownTimer -= Time.deltaTime;
+            if (_staminaCooldownTimer <= 0f) _staminaOnCooldown = false;
+            if (isSprinting) isSprinting = false;
+            return;
+        }
+
+        if (activelySprinting)
+        {
+            _sprintStamina -= staminaDepletionRate * Time.deltaTime;
+            if (_sprintStamina <= 0f)
+            {
+                _sprintStamina = 0f;
+                isSprinting = false;
+                _staminaOnCooldown = true;
+                _staminaCooldownTimer = staminaCooldownAfterEmpty;
+            }
+        }
+        else
+        {
+            _sprintStamina = Mathf.Min(maxSprintStamina, _sprintStamina + staminaRechargeRate * Time.deltaTime);
         }
     }
 
@@ -206,11 +255,9 @@ public class FPS_Controller : MonoBehaviour
         {
             if (Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
             {
-                // Puerta normal
                 var door = hit.collider.GetComponent<DoorOpen>();
                 if (door != null) { door.OpenDoor(); return; }
 
-                // Pickup item
                 var pickable = hit.collider.GetComponentInParent<PickableItem>();
                 if (pickable != null && playerInventory != null)
                 {
@@ -249,7 +296,7 @@ public class FPS_Controller : MonoBehaviour
     public void OnSprint(InputAction.CallbackContext context)
     {
         if (IsAnyBlocker()) { isSprinting = false; return; }
-        if (context.performed && !IsCrouching) isSprinting = true;
+        if (context.performed && !IsCrouching && CanSprint) isSprinting = true;
         if (context.canceled) isSprinting = false;
     }
 

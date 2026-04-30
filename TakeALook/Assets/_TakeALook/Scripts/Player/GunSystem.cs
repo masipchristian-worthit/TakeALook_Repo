@@ -17,6 +17,7 @@ public class GunSystem : MonoBehaviour
     [SerializeField] GameObject arms;
     [SerializeField] private float drawCooldown = 0.6f;
     [SerializeField] private float reloadTime = 1.5f;
+    [SerializeField] private float inspectTime = 1.5f;
     private bool _isTransitioning = false;
 
     [Header("General References")]
@@ -38,7 +39,7 @@ public class GunSystem : MonoBehaviour
     [Header("Animation Performance Overrides")]
     [Tooltip("Multiplicador global para acelerar las animaciones del Animator. 1 = Normal.")]
     [SerializeField] private float globalAnimationSpeedMultiplier = 1.0f;
-    [Tooltip("Permite disparar más rápido que la animación. Si false, el cooldown se ajusta a la duración visual.")]
+    [Tooltip("Permite disparar mï¿½s rï¿½pido que la animaciï¿½n. Si false, el cooldown se ajusta a la duraciï¿½n visual.")]
     [SerializeField] private bool allowRapidFireOverlap = true;
 
     [Header("Flashlight System")]
@@ -46,9 +47,9 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private float maxFlashlightIntensity = 5f;
     [SerializeField] private float flashlightTransitionTime = 0.8f;
     [Range(0f, 1f)]
-    [Tooltip("0 = Transición suave, 1 = Parpadeo caótico.")]
+    [Tooltip("0 = Transiciï¿½n suave, 1 = Parpadeo caï¿½tico.")]
     [SerializeField] private float flashlightFlickerAmount = 0.5f;
-    [Tooltip("Empezar la partida con la linterna desbloqueada (testing). Desactívalo en producción.")]
+    [Tooltip("Empezar la partida con la linterna desbloqueada (testing). Desactï¿½valo en producciï¿½n.")]
     [SerializeField] private bool startWithFlashlight = true;
 
     [Header("Audio IDs")]
@@ -88,10 +89,27 @@ public class GunSystem : MonoBehaviour
     private RaycastHit _hit;
     private bool _masterActionLock = false;
 
+    // Cooldown tracking para la barra de UI
+    private float _lastShotTime = -999f;
+    private float _lastShotCooldown = 1f;
+    private float _reloadStartTime = -999f;
+    private float _reloadTotalTime = 1f;
+
+    // 1.0 = reciÃ©n disparado (barra llena), 0.0 = listo para disparar (barra vacÃ­a)
+    public float ShootCooldownNormalized =>
+        1f - Mathf.Clamp01((Time.time - _lastShotTime) / Mathf.Max(0.001f, _lastShotCooldown));
+
+    // Public API para WeaponHUD
+    public bool IsReloading => _isReloading;
+    public bool IsShooting => _isShooting;
+    public float ShootCooldownProgress => ShootCooldownNormalized;
+    public float ReloadProgress =>
+        Mathf.Clamp01((Time.time - _reloadStartTime) / Mathf.Max(0.001f, _reloadTotalTime));
+
     // Renderers cacheados para evitar parpadeo de malla en draw/sheath
     private Renderer[] _armsRenderers;
 
-    // Input buffer (rueda del ratón)
+    // Input buffer (rueda del ratï¿½n)
     private readonly Queue<int> _scrollBuffer = new Queue<int>();
     private float _nextSwapAllowedTime;
     private float _bufferLastEnqueueTime;
@@ -107,6 +125,9 @@ public class GunSystem : MonoBehaviour
     public int GetMag(BulletType type) => GetStatsRef(type).currentMag;
     public int GetReserve(BulletType type) => GetStatsRef(type).reserveAmmo;
     public int GetMagCapacity(BulletType type) => GetStatsRef(type).magCapacity;
+
+    // True si el cargador del arma activa estÃ¡ vacÃ­o (los enemigos lo usan para rushear).
+    public bool IsCurrentMagEmpty => _activeStats.currentMag <= 0;
 
     private GunStats GetStatsRef(BulletType type)
     {
@@ -150,25 +171,20 @@ public class GunSystem : MonoBehaviour
 
     private void Start()
     {
-        if (arms != null) arms.SetActive(false);
+        // El GameObject de los brazos se mantiene SIEMPRE activo para que el Animator
+        // no se reinicie cada vez que se saca/guarda el arma (eso causaba parpadeos
+        // y desincronizaciÃ³n entre la malla y el estado _isGunDrawn).
+        // La visibilidad se controla Ãºnicamente toggleando los renderers.
+        if (arms != null)
+        {
+            arms.SetActive(true);
+            SetArmsRenderersEnabled(false);
+        }
         if (anim != null) anim.speed = globalAnimationSpeedMultiplier;
     }
 
     private void Update()
     {
-        bool uiBlocked = UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen();
-
-        if (uiBlocked)
-        {
-            _scrollBuffer.Clear();
-            return;
-        }
-
-        if (_isGunDrawn && !_isShooting && !_isReloading && _canSwap && !_masterActionLock)
-        {
-            ProcessScrollInput();
-            ProcessScrollBuffer();
-        }
     }
 
     #region Helpers - Renderers + Input Block
@@ -254,13 +270,13 @@ public class GunSystem : MonoBehaviour
         float scroll = Mouse.current.scroll.ReadValue().y;
         if (Mathf.Abs(scroll) > 0.1f)
         {
-            // Evitar enqueues múltiples por un mismo "tick" del scroll
+            // Evitar enqueues mï¿½ltiples por un mismo "tick" del scroll
             if (Time.time - _bufferLastEnqueueTime > 0.04f)
             {
                 _scrollBuffer.Enqueue(scroll > 0 ? 1 : -1);
                 _bufferLastEnqueueTime = Time.time;
 
-                // Limitar tamaño del buffer
+                // Limitar tamaï¿½o del buffer
                 while (_scrollBuffer.Count > 4) _scrollBuffer.Dequeue();
             }
         }
@@ -274,9 +290,10 @@ public class GunSystem : MonoBehaviour
     {
         if (_scrollBuffer.Count == 0 || Time.time < _nextSwapAllowedTime) return;
         int dir = _scrollBuffer.Dequeue();
-        int next = ((int)currentBullet + dir + 3) % 3;
-        SetBulletType((BulletType)next);
-        _nextSwapAllowedTime = Time.time + weaponSwapCooldown;
+        BulletType next = (BulletType)(((int)currentBullet + dir + 3) % 3);
+        if (next == currentBullet) return;
+        _nextSwapAllowedTime = Time.time + weaponSwapCooldown + inspectTime;
+        StartCoroutine(SwapViaInspectRoutine(next));
     }
     #endregion
 
@@ -325,11 +342,7 @@ public class GunSystem : MonoBehaviour
         if (IsInputBlocked()) return;
         if (!_isGunDrawn || _isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
 
-        if (anim != null && anim.isActiveAndEnabled)
-        {
-            anim.ResetTrigger("Inspect");
-            anim.SetTrigger("Inspect");
-        }
+        StartCoroutine(InspectAndSwapRoutine());
     }
 
     public void OnFlashlight(InputAction.CallbackContext context)
@@ -375,8 +388,8 @@ public class GunSystem : MonoBehaviour
 
     #region Coroutines & Logic
     /// <summary>
-    /// FIX PARPADEO: Activamos el GameObject pero mantenemos los renderers OFF hasta que el Animator
-    /// haya evaluado el primer frame de la animación de Draw. Así no se ve la pose por defecto.
+    /// FIX PARPADEO: el GameObject 'arms' se mantiene siempre activo (Start). AquÃ­ solo encendemos
+    /// los renderers DESPUÃ‰S de que el Animator haya evaluado el primer frame del clip de Draw.
     /// </summary>
     private IEnumerator DrawWeaponRoutine()
     {
@@ -384,25 +397,34 @@ public class GunSystem : MonoBehaviour
         _isGunDrawn = true;
         _masterActionLock = true;
 
-        if (arms != null)
-        {
-            arms.SetActive(true);
-            SetArmsRenderersEnabled(false); // <-- CLAVE: ocultamos hasta primer frame válido
-        }
+        // Garantizamos que el GO estÃ© activo y los renderers ocultos antes de empezar.
+        if (arms != null && !arms.activeSelf) arms.SetActive(true);
+        SetArmsRenderersEnabled(false);
 
         if (anim != null && anim.isActiveAndEnabled)
         {
             anim.speed = globalAnimationSpeedMultiplier;
             anim.ResetTrigger("Draw");
+            anim.ResetTrigger("SheathComplete");
             anim.SetFloat("DrawSpeed", 1f);
             anim.SetTrigger("Draw");
-            anim.Update(0f); // forzar evaluación inmediata del trigger
+            anim.Update(0f); // forzar evaluaciÃ³n inmediata del trigger
         }
 
-        // Esperamos un frame para que el SkinnedMeshRenderer evalúe la nueva pose
+        // Esperamos hasta que el Animator haya entrado de verdad en el estado de Draw,
+        // para que los renderers no se enciendan mostrando una pose intermedia.
         yield return null;
-        // Y un frame extra para máxima seguridad ante latencia de transiciones del Animator
-        yield return null;
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            float guard = 0f;
+            while (anim.IsInTransition(0) && guard < 0.25f)
+            {
+                guard += Time.deltaTime;
+                yield return null;
+            }
+            anim.Update(0f);
+        }
+        yield return new WaitForEndOfFrame();
 
         SetArmsRenderersEnabled(true);
         AudioManager.Instance?.PlaySFX(drawSfxId, transform.position);
@@ -438,6 +460,7 @@ public class GunSystem : MonoBehaviour
         {
             anim.speed = globalAnimationSpeedMultiplier;
             anim.ResetTrigger("Draw");
+            anim.ResetTrigger("SheathComplete");
             anim.SetFloat("DrawSpeed", -1f);
             anim.SetTrigger("Draw");
             anim.Update(0f);
@@ -464,9 +487,10 @@ public class GunSystem : MonoBehaviour
             anim.SetTrigger("SheathComplete");
         }
 
-        // Ocultar los renderers ANTES de SetActive(false) para evitar parpadeo de pose final
+        // Solo ocultamos los renderers. NO desactivamos el GameObject para evitar
+        // que el Animator se reinicie en el prÃ³ximo Draw (causa raÃ­z del parpadeo
+        // y de que pareciera que "no se contaba como sacada" la primera vez).
         SetArmsRenderersEnabled(false);
-        if (arms != null) arms.SetActive(false);
 
         _isGunDrawn = false;
         _isTransitioning = false;
@@ -501,6 +525,9 @@ public class GunSystem : MonoBehaviour
             }
         }
 
+        _lastShotTime = Time.time;
+        _lastShotCooldown = dynamicCooldown;
+
         yield return new WaitForSeconds(dynamicCooldown);
 
         _isShooting = false;
@@ -532,6 +559,9 @@ public class GunSystem : MonoBehaviour
                 currentReloadTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
         }
 
+        _reloadStartTime = Time.time;
+        _reloadTotalTime = currentReloadTime;
+
         yield return new WaitForSeconds(currentReloadTime);
 
         int bulletsNeeded = _activeStats.magCapacity - _activeStats.currentMag;
@@ -551,18 +581,126 @@ public class GunSystem : MonoBehaviour
         Vector3 direction = fpsCam.transform.forward;
         direction.x += Random.Range(-_activeStats.spread, _activeStats.spread);
         direction.y += Random.Range(-_activeStats.spread, _activeStats.spread);
+        direction.Normalize();
 
-        if (Physics.Raycast(fpsCam.transform.position, direction, out _hit, _activeStats.range, impactLayer))
+        bool isBullBullet = currentBullet == BulletType.Bull;
+
+        RaycastHit[] hits = Physics.RaycastAll(fpsCam.transform.position, direction, _activeStats.range, impactLayer);
+        if (hits.Length == 0) return;
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+
+        if (currentBullet == BulletType.Eagle)
+            ProcessPiercingHits(hits, isBullBullet);
+        else
+            ProcessStoppingHit(hits, isBullBullet);
+    }
+
+    // Wolf/Bull: para en el primer hit (headshot, body, o pared). Solo procesa ese hit.
+    private void ProcessStoppingHit(RaycastHit[] hits, bool isBullBullet)
+    {
+        foreach (var hit in hits)
         {
-            if (_activeStats.impactEffect)
-                Instantiate(_activeStats.impactEffect, _hit.point, Quaternion.LookRotation(_hit.normal));
-
-            if (_hit.collider.CompareTag("Enemy"))
+            // Headshot hit - process only this
+            var hs = hit.collider.GetComponent<HeadshotCollider>();
+            if (hs != null && hs.Target != null)
             {
-                var health = _hit.collider.GetComponent<EnemyHealth>();
-                if (health != null) health.TakeDamage(_activeStats.damage);
+                if (_activeStats.impactEffect)
+                    Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                hs.ApplyDamage(_activeStats.damage, isBullBullet);
+                return;
             }
+
+            // Enemy body hit - process only this
+            if (hit.collider.CompareTag("Enemy"))
+            {
+                var health = hit.collider.GetComponent<EnemyHealth>() ?? hit.collider.GetComponentInParent<EnemyHealth>();
+                if (health != null)
+                {
+                    if (_activeStats.impactEffect)
+                        Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                    health.TakeDamage(_activeStats.damage, isBullBullet);
+                    return;
+                }
+            }
+
+            // Wall hit - stop here
+            if (_activeStats.impactEffect)
+                Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+            return;
         }
+    }
+
+    // Eagle: atraviesa enemigos, cada uno recibe daÃ±o una sola vez (headshot O body, no ambos). Para en paredes.
+    private void ProcessPiercingHits(RaycastHit[] hits, bool isBullBullet)
+    {
+        var damagedEnemies = new HashSet<EnemyHealth>();
+
+        foreach (var hit in hits)
+        {
+            // Headshot hit
+            var hs = hit.collider.GetComponent<HeadshotCollider>();
+            if (hs != null && hs.Target != null && !damagedEnemies.Contains(hs.Target))
+            {
+                damagedEnemies.Add(hs.Target);
+                if (_activeStats.impactEffect)
+                    Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                hs.ApplyDamage(_activeStats.damage, isBullBullet);
+                continue;
+            }
+
+            // Enemy body hit
+            if (hit.collider.CompareTag("Enemy"))
+            {
+                var health = hit.collider.GetComponent<EnemyHealth>() ?? hit.collider.GetComponentInParent<EnemyHealth>();
+                if (health != null && !damagedEnemies.Contains(health))
+                {
+                    damagedEnemies.Add(health);
+                    if (_activeStats.impactEffect)
+                        Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                    health.TakeDamage(_activeStats.damage, isBullBullet);
+                }
+                continue;
+            }
+
+            // Wall hit - stop
+            if (_activeStats.impactEffect)
+                Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+            return;
+        }
+    }
+
+    // Swap de bala: dispara animaciÃ³n Inspect y aplica el cambio al terminar
+    private IEnumerator SwapViaInspectRoutine(BulletType targetType)
+    {
+        _canSwap = false;
+        _canShoot = false;
+        _canReload = false;
+        _masterActionLock = true;
+
+        float waitTime = inspectTime;
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Inspect");
+            anim.SetTrigger("Inspect");
+            anim.Update(0f);
+
+            AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+            if (stateInfo.length > 0.05f)
+                waitTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
+        }
+
+        yield return new WaitForSeconds(waitTime);
+
+        currentBullet = targetType;
+        UpdateActiveStats();
+        AudioManager.Instance?.PlayUI(swapSfxId);
+
+        _canSwap = true;
+        _canShoot = true;
+        _canReload = true;
+        _masterActionLock = false;
     }
 
     private IEnumerator SwapCooldownRoutine()
@@ -570,6 +708,40 @@ public class GunSystem : MonoBehaviour
         _canSwap = false;
         yield return new WaitForSeconds(weaponSwapCooldown);
         _canSwap = true;
+    }
+
+    private IEnumerator InspectAndSwapRoutine()
+    {
+        _canSwap = false;
+        _canShoot = false;
+        _canReload = false;
+        _masterActionLock = true;
+
+        float waitTime = inspectTime;
+
+        if (anim != null && anim.isActiveAndEnabled)
+        {
+            anim.speed = globalAnimationSpeedMultiplier;
+            anim.ResetTrigger("Inspect");
+            anim.SetTrigger("Inspect");
+            anim.Update(0f);
+
+            AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
+            if (stateInfo.length > 0.05f)
+                waitTime = stateInfo.length / Mathf.Max(0.01f, globalAnimationSpeedMultiplier);
+        }
+
+        yield return new WaitForSeconds(waitTime);
+
+        BulletType next = (BulletType)(((int)currentBullet + 1) % 3);
+        currentBullet = next;
+        UpdateActiveStats();
+        AudioManager.Instance?.PlayUI(swapSfxId);
+
+        _canSwap = true;
+        _canShoot = true;
+        _canReload = true;
+        _masterActionLock = false;
     }
     #endregion
 
