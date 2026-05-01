@@ -4,7 +4,9 @@ using DG.Tweening;
 /// <summary>
 /// Componente para items recogibles del mundo.
 /// Tiene un GUID único para persistencia entre escenas (no reaparece tras recoger).
-/// Incluye animación idle suave (bob + rotación) y feedback al recoger.
+/// Por defecto los items están QUIETOS (no rotan ni hacen bob): se quiere que respeten
+/// la pose con la que fueron colocados en la escena. Si se desea reactivar el efecto
+/// idle se pueden poner los flags playIdleAnim/rotationSpeed por encima de cero.
 /// </summary>
 [RequireComponent(typeof(Collider))]
 public class PickableItem : MonoBehaviour
@@ -16,11 +18,13 @@ public class PickableItem : MonoBehaviour
     [Header("Persistencia (auto)")]
     [SerializeField] private string uniqueId; // se genera con menú contextual
 
-    [Header("Idle Animation")]
-    [SerializeField] private bool playIdleAnim = true;
+    [Header("Idle Animation (por defecto APAGADO)")]
+    [Tooltip("Activa para hacer un bob vertical suave. Por defecto OFF: el item se queda quieto.")]
+    [SerializeField] private bool playIdleAnim = false;
     [SerializeField] private float bobAmount = 0.1f;
     [SerializeField] private float bobSpeed = 1.5f;
-    [SerializeField] private float rotationSpeed = 30f;
+    [Tooltip("Grados/seg de rotación sobre Y. Por defecto 0 = no rota.")]
+    [SerializeField] private float rotationSpeed = 0f;
 
     [Header("Pickup Feedback")]
     [SerializeField] private GameObject pickupVFX;
@@ -61,7 +65,8 @@ public class PickableItem : MonoBehaviour
 
     private void Update()
     {
-        if (rotationSpeed != 0f)
+        // Sólo rotamos si rotationSpeed > 0 (por defecto 0 = quieto).
+        if (rotationSpeed > 0.0001f)
             transform.Rotate(Vector3.up, rotationSpeed * Time.deltaTime, Space.World);
     }
 

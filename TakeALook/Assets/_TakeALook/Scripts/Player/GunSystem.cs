@@ -27,6 +27,10 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private Animator anim;
     [Tooltip("VFX que se reproduce en cada disparo. Puede ser un ParticleSystem o un GameObject con VFX hijos.")]
     [SerializeField] private GameObject shootVFX;
+    [Tooltip("VFX_BloodSplatter — se instancia en el punto de impacto cuando el raycast golpea a un enemigo (cuerpo o cabeza). Debe llevar BloodCollisionHandler para que las partículas spawn'een charcos al tocar el suelo.")]
+    [SerializeField] private GameObject bloodSplatterPrefab;
+    [Tooltip("Distancia de offset desde el punto de impacto hacia la dirección del disparador (entre el collider y la malla, para que el VFX no se incruste dentro del enemigo).")]
+    [SerializeField, Range(0f, 0.2f)] private float bloodSplatterSurfaceOffset = 0.04f;
 
     [Header("Ammo Settings (Wolf / Bull / Eagle)")]
     [SerializeField] private GunStats wolfStats;
@@ -59,7 +63,10 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private string sheathSfxId = "gun_sheath";
     [SerializeField] private string reloadSfxId = "gun_reload";
     [SerializeField] private string inspectSfxId= "gun_inspect";
+    [Tooltip("SFX al pulsar disparo con el cargador a 0 (dryfire).")]
     [SerializeField] private string emptySfxId  = "gun_empty";
+    [Tooltip("SFX al pulsar recargar sin munición de reserva (intento fallido).")]
+    [SerializeField] private string emptyReloadSfxId = "gun_empty_reload";
     [SerializeField] private string swapSfxId   = "gun_swap";
 
     [Header("Audio IDs - Shoot (per bullet type)")]
@@ -72,7 +79,12 @@ public class GunSystem : MonoBehaviour
     [SerializeField] private string flashlightOffId = "flashlight_off";
 
     [Header("Input Buffer")]
+    [Tooltip("Ventana (segundos) durante la cual una acción pulsada mientras otra estaba en curso se ejecutará al terminar la actual.")]
     [SerializeField] private float inputBufferWindow = 0.18f;
+
+    [Header("Draw/Sheath Cooldown (anti-bug)")]
+    [Tooltip("Tiempo mínimo (segundos) entre dos pulsaciones consecutivas de sacar/guardar arma. Evita desincronización del Animator si se spamea la tecla.")]
+    [SerializeField] private float drawSheathLockoutTime = 0.45f;
     #endregion
 
     #region Data Structures
@@ -116,6 +128,19 @@ public class GunSystem : MonoBehaviour
     private readonly Queue<int> _scrollBuffer = new Queue<int>();
     private float _nextSwapAllowedTime;
     private float _bufferLastEnqueueTime;
+
+    // Buffer genérico de acción: si pulsas Disparo/Recargar/Inspeccionar/Sacar mientras
+    // otra acción aún está en curso, se encola y se ejecuta al terminar la actual
+    // (siempre que esté dentro de la ventana inputBufferWindow). Evita que se "trague"
+    // los inputs en cadena.
+    private enum BufferedAction { None, Shoot, Reload, Inspect, DrawToggle }
+    private BufferedAction _bufferedAction = BufferedAction.None;
+    private float _bufferedActionTime = -999f;
+
+    // Cooldown estricto del par draw/sheath. Impide que se intercale otra transición
+    // mientras la última no haya pasado el lockout. Refuerza _isTransitioning con un
+    // candado temporal independiente del coroutine.
+    private float _drawSheathLockoutUntil = -999f;
 
     private bool _isFlashlightOn = false;
     private bool _hasFlashlight = false;
@@ -278,6 +303,13 @@ public class GunSystem : MonoBehaviour
     #endregion
 
     #region Mouse Wheel - Input Buffer
+    private void Update()
+    {
+        ProcessScrollInput();
+        ProcessScrollBuffer();
+        ProcessActionBuffer();
+    }
+
     private void ProcessScrollInput()
     {
         if (Mouse.current == null) return;
@@ -299,11 +331,57 @@ public class GunSystem : MonoBehaviour
     private void ProcessScrollBuffer()
     {
         if (_scrollBuffer.Count == 0 || Time.time < _nextSwapAllowedTime) return;
+        if (IsInputBlocked() || _isTransitioning || _isReloading || _masterActionLock) return;
         int dir = _scrollBuffer.Dequeue();
         BulletType next = (BulletType)(((int)currentBullet + dir + 3) % 3);
         if (next == currentBullet) return;
         _nextSwapAllowedTime = Time.time + weaponSwapCooldown + inspectTime;
         StartCoroutine(SwapViaInspectRoutine(next));
+    }
+
+    /// <summary>
+    /// Encola una acción para que se ejecute cuando la transición/animación actual
+    /// termine. La cola tiene una sola posición — la acción más reciente sobreescribe
+    /// la anterior, igual que en los shooter modernos.
+    /// </summary>
+    private void BufferAction(BufferedAction action)
+    {
+        _bufferedAction = action;
+        _bufferedActionTime = Time.time;
+    }
+
+    private void ProcessActionBuffer()
+    {
+        if (_bufferedAction == BufferedAction.None) return;
+
+        // Caduca si hace demasiado tiempo del input
+        if (Time.time - _bufferedActionTime > inputBufferWindow)
+        {
+            _bufferedAction = BufferedAction.None;
+            return;
+        }
+
+        // Si la UI está abierta, descartamos el buffer entero (RE4: no podemos actuar
+        // sobre el arma con la UI desplegada).
+        if (IsInputBlocked())
+        {
+            _bufferedAction = BufferedAction.None;
+            return;
+        }
+
+        // Esperamos a que se libere todo
+        if (_isTransitioning || _isShooting || _isReloading || _masterActionLock) return;
+
+        BufferedAction toExec = _bufferedAction;
+        _bufferedAction = BufferedAction.None;
+
+        switch (toExec)
+        {
+            case BufferedAction.Shoot:      TryShootImmediate(); break;
+            case BufferedAction.Reload:     TryReloadImmediate(); break;
+            case BufferedAction.Inspect:    TryInspectImmediate(); break;
+            case BufferedAction.DrawToggle: TryDrawToggleImmediate(); break;
+        }
     }
     #endregion
 
@@ -312,17 +390,71 @@ public class GunSystem : MonoBehaviour
     {
         if (!context.performed) return;
         if (IsInputBlocked()) return;
-        if (_isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
 
-        if (!_isGunDrawn) StartCoroutine(DrawWeaponRoutine());
-        else StartCoroutine(SheathWeaponRoutine());
+        if (!CanStartDrawSheathNow()) { BufferAction(BufferedAction.DrawToggle); return; }
+        TryDrawToggleImmediate();
     }
 
     public void OnShoot(InputAction.CallbackContext context)
     {
         if (!context.performed) return;
         if (IsInputBlocked()) return;
-        if (!_isGunDrawn || !_canShoot || _isReloading || _isTransitioning || _masterActionLock) return;
+
+        if (!CanShootNow()) { BufferAction(BufferedAction.Shoot); return; }
+        TryShootImmediate();
+    }
+
+    public void OnReload(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+        if (IsInputBlocked()) return;
+
+        if (!CanReloadNow()) { BufferAction(BufferedAction.Reload); return; }
+        TryReloadImmediate();
+    }
+
+    public void OnInspect(InputAction.CallbackContext context)
+    {
+        if (!context.performed) return;
+        if (IsInputBlocked()) return;
+
+        if (!CanInspectNow()) { BufferAction(BufferedAction.Inspect); return; }
+        TryInspectImmediate();
+    }
+
+    // ==== Helpers de validación (también consultados por el buffer) ====
+    private bool CanShootNow()
+    {
+        if (!_isGunDrawn) return false;
+        if (!_canShoot || _isReloading || _isTransitioning || _masterActionLock) return false;
+        return true;
+    }
+
+    private bool CanReloadNow()
+    {
+        if (!_isGunDrawn) return false;
+        if (_isReloading || _isShooting || _isTransitioning || _masterActionLock) return false;
+        return true;
+    }
+
+    private bool CanInspectNow()
+    {
+        if (!_isGunDrawn) return false;
+        if (_isShooting || _isReloading || _isTransitioning || _masterActionLock) return false;
+        return true;
+    }
+
+    private bool CanStartDrawSheathNow()
+    {
+        if (Time.time < _drawSheathLockoutUntil) return false;
+        if (_isShooting || _isReloading || _isTransitioning || _masterActionLock) return false;
+        return true;
+    }
+
+    // ==== Ejecutores reales (también llamados por el buffer) ====
+    private void TryShootImmediate()
+    {
+        if (!CanShootNow()) return;
 
         if (_activeStats.currentMag > 0)
         {
@@ -336,24 +468,40 @@ public class GunSystem : MonoBehaviour
         }
     }
 
-    public void OnReload(InputAction.CallbackContext context)
+    private void TryReloadImmediate()
     {
-        if (!context.performed) return;
-        if (IsInputBlocked()) return;
-        if (!_isGunDrawn || _isReloading || _isShooting || _isTransitioning || _masterActionLock) return;
+        if (!CanReloadNow()) return;
 
         bool needsReload = _activeStats.currentMag < _activeStats.magCapacity;
         bool hasReserveAmmo = _activeStats.reserveAmmo > 0;
-        if (needsReload && hasReserveAmmo) StartCoroutine(ReloadRoutine());
+
+        if (!needsReload) return; // ya está completo, ignorado
+
+        if (!hasReserveAmmo)
+        {
+            // Intento de recarga sin reservas: feedback de audio dedicado.
+            AudioManager.Instance?.PlaySFX(emptyReloadSfxId, transform.position);
+            return;
+        }
+
+        StartCoroutine(ReloadRoutine());
     }
 
-    public void OnInspect(InputAction.CallbackContext context)
+    private void TryInspectImmediate()
     {
-        if (!context.performed) return;
-        if (IsInputBlocked()) return;
-        if (!_isGunDrawn || _isShooting || _isReloading || _isTransitioning || _masterActionLock) return;
-
+        if (!CanInspectNow()) return;
         StartCoroutine(InspectAndSwapRoutine());
+    }
+
+    private void TryDrawToggleImmediate()
+    {
+        if (!CanStartDrawSheathNow()) return;
+        // Lockout PRE-coroutine: bloquea cualquier nuevo Draw/Sheath durante el tiempo
+        // mínimo configurado, aunque la coroutine en sí termine antes (defensa frente
+        // al spam que dejaba desincronizado el Animator).
+        _drawSheathLockoutUntil = Time.time + drawSheathLockoutTime;
+        if (!_isGunDrawn) StartCoroutine(DrawWeaponRoutine());
+        else StartCoroutine(SheathWeaponRoutine());
     }
 
     public void OnFlashlight(InputAction.CallbackContext context)
@@ -453,6 +601,9 @@ public class GunSystem : MonoBehaviour
         _canReload = true;
         _isTransitioning = false;
         _masterActionLock = false;
+        // Extiende el lockout post-coroutine: cualquier Draw/Sheath nuevo tiene que
+        // esperar drawSheathLockoutTime adicional al término de esta transición.
+        _drawSheathLockoutUntil = Mathf.Max(_drawSheathLockoutUntil, Time.time + drawSheathLockoutTime);
     }
 
     /// <summary>
@@ -524,6 +675,8 @@ public class GunSystem : MonoBehaviour
         _isGunDrawn = false;
         _isTransitioning = false;
         _masterActionLock = false;
+        // Extiende el lockout post-coroutine.
+        _drawSheathLockoutUntil = Mathf.Max(_drawSheathLockoutUntil, Time.time + drawSheathLockoutTime);
     }
 
     private IEnumerator ShootRoutine()
@@ -671,8 +824,7 @@ public class GunSystem : MonoBehaviour
             var hs = hit.collider.GetComponent<HeadshotCollider>();
             if (hs != null && hs.Target != null)
             {
-                if (_activeStats.impactEffect)
-                    Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                SpawnEnemyHitVFX(hit);
                 hs.ApplyDamage(_activeStats.damage, isBullBullet);
                 return;
             }
@@ -682,8 +834,7 @@ public class GunSystem : MonoBehaviour
                 var health = hit.collider.GetComponent<EnemyHealth>() ?? hit.collider.GetComponentInParent<EnemyHealth>();
                 if (health != null)
                 {
-                    if (_activeStats.impactEffect)
-                        Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                    SpawnEnemyHitVFX(hit);
                     health.TakeDamage(_activeStats.damage, isBullBullet);
                     return;
                 }
@@ -705,8 +856,7 @@ public class GunSystem : MonoBehaviour
             if (hs != null && hs.Target != null && !damagedEnemies.Contains(hs.Target))
             {
                 damagedEnemies.Add(hs.Target);
-                if (_activeStats.impactEffect)
-                    Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                SpawnEnemyHitVFX(hit);
                 hs.ApplyDamage(_activeStats.damage, isBullBullet);
                 continue;
             }
@@ -717,8 +867,7 @@ public class GunSystem : MonoBehaviour
                 if (health != null && !damagedEnemies.Contains(health))
                 {
                     damagedEnemies.Add(health);
-                    if (_activeStats.impactEffect)
-                        Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
+                    SpawnEnemyHitVFX(hit);
                     health.TakeDamage(_activeStats.damage, isBullBullet);
                 }
                 continue;
@@ -727,6 +876,27 @@ public class GunSystem : MonoBehaviour
             if (_activeStats.impactEffect)
                 Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
             return;
+        }
+    }
+
+    /// <summary>
+    /// Spawnea el VFX_BloodSplatter en la superficie del impacto (entre collider y malla)
+    /// orientado contra la dirección de la bala. Mantiene también el impactEffect del arma
+    /// si está asignado, para que el feedback general de impacto siga visible.
+    /// </summary>
+    private void SpawnEnemyHitVFX(RaycastHit hit)
+    {
+        Vector3 surfacePos = hit.point + hit.normal * bloodSplatterSurfaceOffset;
+        Quaternion surfaceRot = Quaternion.LookRotation(hit.normal);
+
+        if (bloodSplatterPrefab != null)
+        {
+            Instantiate(bloodSplatterPrefab, surfacePos, surfaceRot);
+        }
+
+        if (_activeStats.impactEffect != null)
+        {
+            Instantiate(_activeStats.impactEffect, hit.point, Quaternion.LookRotation(hit.normal));
         }
     }
 

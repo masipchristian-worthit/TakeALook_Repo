@@ -1,16 +1,5 @@
 using UnityEngine;
 
-/// <summary>
-/// Gestiona el ciclo de vida de un charco de sangre:
-/// crece al recibir impactos de partículas, cambia de color (rojo → marrón oscuro)
-/// y desaparece con fade al final de su vida.
-///
-/// Notas:
-///  - PropertyIDs cacheados (string lookups solo una vez por clase).
-///  - Antes hacía SetActive(false) al final, lo que dejaba GameObjects "fantasma" en
-///    la escena. Ahora se DESTRUYE limpiamente.
-///  - Se asegura un Collider para que BloodCollisionHandler pueda detectarlo y crecerlo.
-/// </summary>
 [RequireComponent(typeof(Renderer))]
 public class BloodPuddle : MonoBehaviour
 {
@@ -19,6 +8,10 @@ public class BloodPuddle : MonoBehaviour
     [SerializeField] float lifeTime = 12f;
     [SerializeField] Color freshColor = Color.red;
     [SerializeField] Color driedColor = new Color(0.1f, 0f, 0f, 1f);
+
+    [Header("Variación de tonalidad (rojo)")]
+    [SerializeField, Range(0f, 0.3f)] float redTintVariation = 0.18f;
+    [SerializeField, Range(0f, 0.3f)] float redDarkenVariation = 0.15f;
 
     private static readonly int ColorProp = Shader.PropertyToID("_Color");
     private static readonly int CutoffProp = Shader.PropertyToID("_Cutoff");
@@ -34,13 +27,27 @@ public class BloodPuddle : MonoBehaviour
         _block = new MaterialPropertyBlock();
         transform.localScale = new Vector3(_scale, _scale, 1f);
 
-        // Garantizar collider para que BloodCollisionHandler pueda detectarlo y crecerlo.
         if (GetComponent<Collider>() == null)
         {
             var col = gameObject.AddComponent<SphereCollider>();
             col.isTrigger = true;
             col.radius = 0.5f;
         }
+
+        float darken = Random.Range(0f, redDarkenVariation);
+        float tint = Random.Range(-redTintVariation, redTintVariation);
+        freshColor = new Color(
+            Mathf.Clamp01(freshColor.r - darken + tint * 0.15f),
+            Mathf.Clamp01(freshColor.g + tint * 0.05f),
+            Mathf.Clamp01(freshColor.b + tint * 0.05f),
+            freshColor.a
+        );
+        driedColor = new Color(
+            Mathf.Clamp01(driedColor.r * (1f - darken * 0.5f)),
+            driedColor.g,
+            driedColor.b,
+            driedColor.a
+        );
     }
 
     public void Grow()

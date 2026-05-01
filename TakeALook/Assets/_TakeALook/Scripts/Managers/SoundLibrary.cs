@@ -22,6 +22,7 @@ using UnityEngine;
 ///     gun_shoot_wolf, gun_shoot_bull, gun_shoot_eagle  → disparo por tipo de bala
 ///     gun_reload, gun_inspect
 ///     gun_empty                  → intento de disparo sin balas (dryfire)
+///     gun_empty_reload           → intento de recargar con cargador vacío y SIN reservas
 ///     gun_swap                   → cambio de bala completado
 ///     flashlight_on, flashlight_off
 ///

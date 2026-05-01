@@ -25,6 +25,7 @@ public class EnemyHealth : MonoBehaviour
     Material _baseMat;
     Renderer _firstRenderer;
     EnemyAIBase _ai;
+    Animator _animator;
 
     public float HealthPercent => _isDead ? 0f : (float)_currentHealth / Mathf.Max(1, maxHealth);
     public bool IsDead => _isDead;
@@ -33,6 +34,7 @@ public class EnemyHealth : MonoBehaviour
     {
         _currentHealth = maxHealth;
         _ai = GetComponent<EnemyAIBase>();
+        _animator = GetComponentInChildren<Animator>();
 
         if (meshRenderers == null || meshRenderers.Length == 0)
             meshRenderers = GetComponentsInChildren<Renderer>();
@@ -75,7 +77,10 @@ public class EnemyHealth : MonoBehaviour
         if (_currentHealth <= 0)
             Kill(isBull: false);
         else
+        {
             _ai?.OnHitByNormalBullet();
+            if (_animator != null) _animator.SetTrigger("Shot");
+        }
     }
 
     /// <summary>
@@ -105,7 +110,10 @@ public class EnemyHealth : MonoBehaviour
         if (_currentHealth <= 0)
             Kill(isBull: false);
         else
+        {
             _ai?.OnHitByNormalBullet();
+            if (_animator != null) _animator.SetTrigger("Shot");
+        }
     }
 
     void Kill(bool isBull)
