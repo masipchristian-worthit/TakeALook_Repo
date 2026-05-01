@@ -1,17 +1,13 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using TMPro;
 using DG.Tweening;
 
 /// <summary>
-/// Gestiona la escena de introducción: fondo negro, caja de diálogo con efecto máquina de escribir,
+/// Gestiona la escena de introducción/final: fondo negro, caja de diálogo con efecto máquina de escribir,
 /// botón Skip y transición automática a la siguiente escena al terminar.
-///
-/// Configuración mínima:
-///   - Añadir líneas de diálogo en el Inspector.
-///   - Asignar el nombre de la siguiente escena.
-///   - Conectar las referencias de UI.
 /// </summary>
 public class IntroDialogueManager : MonoBehaviour
 {
@@ -27,22 +23,37 @@ public class IntroDialogueManager : MonoBehaviour
     [SerializeField] private RectTransform dialogueBoxRect;
     [SerializeField] private TMP_Text dialogueText;
     [SerializeField] private float boxFadeInTime = 0.5f;
+
     [Tooltip("Desplazamiento desde el que aparece la caja (slide up).")]
     [SerializeField] private Vector2 boxSlideOffset = new Vector2(0f, -25f);
+
+    [Header("Ajustes del Texto")]
+    [Tooltip("Tamaño de la letra del diálogo.")]
+    [SerializeField] private float textFontSize = 38f;
+
+    [Tooltip("Separación vertical entre líneas.")]
+    [SerializeField] private float textLineSpacing = 0f;
+
+    [Tooltip("Desactiva Auto Size de TextMeshPro para que el tamaño manual funcione correctamente.")]
+    [SerializeField] private bool disableAutoSize = true;
 
     [Header("Efecto Máquina de Escribir")]
     [SerializeField] private float charDelay = 0.042f;
     [SerializeField] private float charDelayFast = 0.006f;
+
     [Tooltip("Pausa extra al encontrar una coma o punto y coma.")]
     [SerializeField] private float commaPause = 0.18f;
+
     [Tooltip("Pausa extra al encontrar un punto, exclamación o interrogación.")]
     [SerializeField] private float periodPause = 0.38f;
 
     [Header("Audio")]
     [Tooltip("ID en SoundLibrary para el blip de cada carácter.")]
     [SerializeField] private string blipSoundId = "dialogue_blip";
+
     [Tooltip("ID en SoundLibrary para el sonido al avanzar línea.")]
     [SerializeField] private string advanceSoundId = "ui_select";
+
     [Tooltip("Reproducir blip cada N caracteres (1 = todos).")]
     [SerializeField][Min(1)] private int blipEveryNChars = 2;
 
@@ -66,6 +77,7 @@ public class IntroDialogueManager : MonoBehaviour
     private bool _fastMode;
     private bool _isTransitioning;
     private bool _inputEnabled;
+    private bool _dialogueStarted;
     private int _charCount;
     private Coroutine _typeRoutine;
     private Vector2 _boxBasePos;
@@ -75,26 +87,39 @@ public class IntroDialogueManager : MonoBehaviour
     private void Start()
     {
         _inputEnabled = false;
+        _dialogueStarted = false;
 
-        // Ocultar UI
+        // Por si venimos de la puerta final con cámara lenta.
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+
+        // Escena de diálogo/UI: mostramos el ratón para poder pulsar Skip.
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        ApplyTextSettings();
+
         if (dialogueBox != null)
         {
             dialogueBox.alpha = 0f;
             dialogueBox.blocksRaycasts = false;
             dialogueBox.interactable = false;
         }
+
         if (skipButton != null)
         {
             skipButton.alpha = 0f;
             skipButton.blocksRaycasts = false;
+            skipButton.interactable = false;
         }
-        if (dialogueText != null) dialogueText.text = "";
+
+        if (dialogueText != null)
+            dialogueText.text = "";
 
         if (dialogueBoxRect != null)
             _boxBasePos = dialogueBoxRect.anchoredPosition;
 
-        // Fade in desde negro y luego arrancar el diálogo
-        SceneFader.Instance?.FadeIn(fadeInDuration, OnFadeInComplete);
+        StartCoroutine(StartDialogueSafely());
     }
 
     private void Update()
@@ -108,7 +133,7 @@ public class IntroDialogueManager : MonoBehaviour
         {
             if (_isTyping)
             {
-                // El modo fast se activa en el coroutine vía polling; nada extra aquí.
+                // Mantener clic acelera el texto.
             }
             else
             {
@@ -119,16 +144,65 @@ public class IntroDialogueManager : MonoBehaviour
 
     #endregion
 
-    #region Flujo principal
+    #region Inicio seguro
+
+    private IEnumerator StartDialogueSafely()
+    {
+        // Seguridad extra por si algún script FPS vuelve a ocultarlo al cargar.
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        if (SceneFader.Instance != null)
+        {
+            SceneFader.Instance.FadeIn(fadeInDuration, OnFadeInComplete);
+
+            // Protección: si por cualquier motivo el callback del fader no se ejecuta,
+            // arrancamos el diálogo igualmente.
+            yield return new WaitForSecondsRealtime(fadeInDuration + 0.25f);
+
+            if (!_dialogueStarted)
+                OnFadeInComplete();
+        }
+        else
+        {
+            OnFadeInComplete();
+        }
+    }
 
     private void OnFadeInComplete()
     {
+        if (_dialogueStarted) return;
+
+        // Volvemos a asegurar el cursor justo cuando empieza el diálogo.
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        _dialogueStarted = true;
         StartCoroutine(DelayedStart());
     }
 
+    #endregion
+
+    #region Ajustes de texto
+
+    private void ApplyTextSettings()
+    {
+        if (dialogueText == null) return;
+
+        if (disableAutoSize)
+            dialogueText.enableAutoSizing = false;
+
+        dialogueText.fontSize = textFontSize;
+        dialogueText.lineSpacing = textLineSpacing;
+    }
+
+    #endregion
+
+    #region Flujo principal
+
     private IEnumerator DelayedStart()
     {
-        yield return new WaitForSeconds(preFadeDialogueDelay);
+        yield return new WaitForSecondsRealtime(preFadeDialogueDelay);
 
         if (dialogueLines == null || dialogueLines.Count == 0)
         {
@@ -145,14 +219,16 @@ public class IntroDialogueManager : MonoBehaviour
             dialogueBoxRect.anchoredPosition = _boxBasePos + boxSlideOffset;
 
         Sequence seq = DOTween.Sequence();
+        seq.SetUpdate(true);
 
         if (dialogueBox != null)
-            seq.Join(dialogueBox.DOFade(1f, boxFadeInTime).SetEase(Ease.OutQuad));
+            seq.Join(dialogueBox.DOFade(1f, boxFadeInTime).SetEase(Ease.OutQuad).SetUpdate(true));
 
         if (dialogueBoxRect != null)
-            seq.Join(dialogueBoxRect.DOAnchorPos(_boxBasePos, boxFadeInTime).SetEase(Ease.OutCubic));
+            seq.Join(dialogueBoxRect.DOAnchorPos(_boxBasePos, boxFadeInTime).SetEase(Ease.OutCubic).SetUpdate(true));
 
         seq.SetLink(gameObject);
+
         seq.OnComplete(() =>
         {
             if (dialogueBox != null)
@@ -161,15 +237,20 @@ public class IntroDialogueManager : MonoBehaviour
                 dialogueBox.interactable = true;
             }
 
-            // Mostrar botón Skip con retardo
             if (skipButton != null)
             {
                 skipButton.blocksRaycasts = true;
+                skipButton.interactable = true;
+
                 DOVirtual.DelayedCall(skipButtonFadeDelay, () =>
                 {
-                    skipButton.DOFade(1f, skipButtonFadeTime).SetLink(gameObject);
-                }).SetLink(gameObject);
+                    if (skipButton != null)
+                        skipButton.DOFade(1f, skipButtonFadeTime).SetUpdate(true).SetLink(gameObject);
+                }).SetUpdate(true).SetLink(gameObject);
             }
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
 
             _inputEnabled = true;
             PlayLine(_currentLine);
@@ -178,22 +259,32 @@ public class IntroDialogueManager : MonoBehaviour
 
     private void PlayLine(int index)
     {
-        if (index >= dialogueLines.Count) { GoToNextScene(); return; }
+        if (index >= dialogueLines.Count)
+        {
+            GoToNextScene();
+            return;
+        }
 
-        if (dialogueText != null) dialogueText.text = "";
+        if (dialogueText != null)
+            dialogueText.text = "";
+
         _charCount = 0;
         _isTyping = true;
 
-        // Efecto de escala sutil al iniciar línea
         if (useLineStartScale && dialogueText != null)
         {
+            dialogueText.transform.DOKill();
             dialogueText.transform.localScale = Vector3.one * lineStartScaleAmount;
+
             dialogueText.transform.DOScale(Vector3.one, lineStartScaleTime)
                 .SetEase(Ease.OutBack)
+                .SetUpdate(true)
                 .SetLink(gameObject);
         }
 
-        if (_typeRoutine != null) StopCoroutine(_typeRoutine);
+        if (_typeRoutine != null)
+            StopCoroutine(_typeRoutine);
+
         _typeRoutine = StartCoroutine(TypeLine(dialogueLines[index]));
     }
 
@@ -202,26 +293,27 @@ public class IntroDialogueManager : MonoBehaviour
         for (int i = 0; i < line.Length; i++)
         {
             char c = line[i];
-            if (dialogueText != null) dialogueText.text += c;
+
+            if (dialogueText != null)
+                dialogueText.text += c;
 
             _charCount++;
 
-            // Blip de audio
             if (_charCount % blipEveryNChars == 0 && c != ' ')
                 AudioManager.Instance?.PlayUI(blipSoundId);
 
-            // Calcular retardo
             float delay = _fastMode ? charDelayFast : charDelay;
 
             if (!_fastMode)
             {
-                if (c == ',' || c == ';') delay = commaPause;
-                else if (c == '.' || c == '!' || c == '?') delay = periodPause;
+                if (c == ',' || c == ';')
+                    delay = commaPause;
+                else if (c == '.' || c == '!' || c == '?')
+                    delay = periodPause;
             }
 
-            yield return new WaitForSeconds(delay);
+            yield return new WaitForSecondsRealtime(delay);
 
-            // Refrescar fast mode en cada frame del typing
             _fastMode = Input.GetMouseButton(0);
         }
 
@@ -234,7 +326,11 @@ public class IntroDialogueManager : MonoBehaviour
 
         _currentLine++;
 
-        if (_currentLine >= dialogueLines.Count) { GoToNextScene(); return; }
+        if (_currentLine >= dialogueLines.Count)
+        {
+            GoToNextScene();
+            return;
+        }
 
         PlayLine(_currentLine);
     }
@@ -242,29 +338,61 @@ public class IntroDialogueManager : MonoBehaviour
     private void GoToNextScene()
     {
         if (_isTransitioning) return;
+
         _isTransitioning = true;
         _inputEnabled = false;
 
-        if (_typeRoutine != null) StopCoroutine(_typeRoutine);
+        if (_typeRoutine != null)
+            StopCoroutine(_typeRoutine);
 
-        SceneFader.Instance?.FadeToScene(nextSceneName);
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+
+        // Al volver al Main Menu, dejamos el cursor visible.
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        if (SceneFader.Instance != null)
+        {
+            SceneFader.Instance.FadeToScene(nextSceneName);
+        }
+        else
+        {
+            SceneManager.LoadScene(nextSceneName);
+        }
     }
 
     #endregion
 
-    #region Botón Skip (asignar en OnClick del Inspector)
+    #region Botón Skip
 
-    /// <summary>Salta todo el diálogo y pasa a la siguiente escena.</summary>
     public void OnSkipPressed()
     {
         if (_isTransitioning) return;
+
         _isTransitioning = true;
         _inputEnabled = false;
 
-        if (_typeRoutine != null) StopCoroutine(_typeRoutine);
+        if (_typeRoutine != null)
+            StopCoroutine(_typeRoutine);
+
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+
+        // Al usar Skip, también dejamos el cursor visible para la siguiente escena UI.
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
 
         AudioManager.Instance?.PlayUI(advanceSoundId);
-        SceneFader.Instance?.FadeToScene(nextSceneName, 0.5f);
+
+        if (SceneFader.Instance != null)
+        {
+            SceneFader.Instance.FadeToScene(nextSceneName, 0.5f);
+        }
+        else
+        {
+            SceneManager.LoadScene(nextSceneName);
+        }
     }
 
     #endregion
