@@ -472,6 +472,8 @@ public class GunSystem : MonoBehaviour
     {
         if (!CanReloadNow()) return;
 
+        UpdateActiveStats();
+
         bool needsReload = _activeStats.currentMag < _activeStats.magCapacity;
         bool hasReserveAmmo = _activeStats.reserveAmmo > 0;
 

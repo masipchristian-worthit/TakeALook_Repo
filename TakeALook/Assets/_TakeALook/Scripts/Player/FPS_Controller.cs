@@ -92,6 +92,7 @@ public class FPS_Controller : MonoBehaviour
     bool _interactRequested;
 
     public float SprintStaminaNormalized => _sprintStamina / Mathf.Max(0.001f, maxSprintStamina);
+    public bool IsSprinting => isSprinting;
     public bool IsStaminaOnCooldown => _staminaOnCooldown;
     public float CurrentHeadHeight => camHolder != null ? camHolder.transform.localPosition.y : (IsCrouching ? crouchingCameraHeight : standingCameraHeight);
 

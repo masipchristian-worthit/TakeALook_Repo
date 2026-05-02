@@ -1,40 +1,13 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using TMPro;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Controls;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
+using System.Collections.Generic;
 
 public class CodeDoor : MonoBehaviour
 {
-    [Header("Persistent Unlock")]
-    [Tooltip("ID único de esta puerta. No repitas el mismo ID en dos puertas distintas.")]
-    [SerializeField] string doorId = "Door_01";
-
-    [Tooltip("Si está activado, la puerta seguirá desbloqueada aunque cambies de escena o reinicies el juego.")]
-    [SerializeField] bool saveInPlayerPrefs = true;
-
-    static HashSet<string> unlockedDoorsThisSession = new HashSet<string>();
-
-    [Header("Final Door Warp")]
-    [Tooltip("Activa esto SOLO en la puerta final. Las demás puertas deben tenerlo desactivado.")]
-    [SerializeField] bool warpOnCorrectCode = false;
-
-    [Tooltip("Escena a la que irá cuando esta puerta final acepte el código.")]
-    [SerializeField] string finalSceneName = "FinalDialogueScene";
-
-    [Tooltip("Tiempo de espera después de aceptar el código antes de cambiar de escena.")]
-    [SerializeField] float delayBeforeFinalWarp = 1.4f;
-
-    [Tooltip("Duración del fade a negro.")]
-    [SerializeField] float finalFadeOutTime = 0.8f;
-
-    [Tooltip("Duración del fade in en la escena final.")]
-    [SerializeField] float finalFadeInTime = 0.8f;
-
     [Header("Door Movement")]
     [SerializeField] float openHeight = 3f;
     [SerializeField] float speed = 2f;
@@ -72,7 +45,6 @@ public class CodeDoor : MonoBehaviour
     bool isUsingPanel;
     bool codeAccepted;
     bool inputLocked;
-    bool finalWarpStarted;
 
     string currentCode = "";
 
@@ -82,11 +54,6 @@ public class CodeDoor : MonoBehaviour
     {
         closedPosition = transform.position;
         openPosition = closedPosition + Vector3.up * openHeight;
-
-        if (string.IsNullOrWhiteSpace(doorId))
-            doorId = gameObject.scene.name + "_" + gameObject.name;
-
-        LoadDoorUnlockState();
 
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null)
@@ -136,39 +103,6 @@ public class CodeDoor : MonoBehaviour
                 CloseDoor();
             }
         }
-    }
-
-    void LoadDoorUnlockState()
-    {
-        bool unlockedInSession = unlockedDoorsThisSession.Contains(doorId);
-        bool unlockedInSave = saveInPlayerPrefs && PlayerPrefs.GetInt(GetDoorSaveKey(), 0) == 1;
-
-        isUnlocked = unlockedInSession || unlockedInSave;
-
-        if (isUnlocked)
-        {
-            unlockedDoorsThisSession.Add(doorId);
-            codeAccepted = false;
-            inputLocked = false;
-            isUsingPanel = false;
-        }
-    }
-
-    void SaveDoorUnlockState()
-    {
-        isUnlocked = true;
-        unlockedDoorsThisSession.Add(doorId);
-
-        if (saveInPlayerPrefs)
-        {
-            PlayerPrefs.SetInt(GetDoorSaveKey(), 1);
-            PlayerPrefs.Save();
-        }
-    }
-
-    string GetDoorSaveKey()
-    {
-        return "CodeDoor_Unlocked_" + doorId;
     }
 
     void HandleInteraction(float distanceToPanel)
@@ -438,9 +372,9 @@ public class CodeDoor : MonoBehaviour
 
         if (currentCode == correctCode)
         {
-            SaveDoorUnlockState();
-
+            isUnlocked = true;
             codeAccepted = true;
+
             currentCode = "";
 
             if (codeText != null)
@@ -457,11 +391,6 @@ public class CodeDoor : MonoBehaviour
 
             Invoke(nameof(CloseCodePanel), 1.2f);
             Invoke(nameof(ResetCode), 1.2f);
-
-            if (warpOnCorrectCode)
-            {
-                StartFinalWarp();
-            }
         }
         else
         {
@@ -477,35 +406,6 @@ public class CodeDoor : MonoBehaviour
             }
 
             Invoke(nameof(ResetCode), 1.2f);
-        }
-    }
-
-    void StartFinalWarp()
-    {
-        if (finalWarpStarted) return;
-
-        finalWarpStarted = true;
-        StartCoroutine(FinalWarpRoutine());
-    }
-
-    IEnumerator FinalWarpRoutine()
-    {
-        yield return new WaitForSeconds(delayBeforeFinalWarp);
-
-        if (string.IsNullOrEmpty(finalSceneName))
-        {
-            Debug.LogWarning("[CodeDoor] La puerta final tiene Warp On Correct Code activado, pero no tiene Final Scene Name.");
-            yield break;
-        }
-
-        if (SceneFader.Instance != null)
-        {
-            SceneFader.Instance.FadeToSceneWithFadeIn(finalSceneName, finalFadeOutTime, finalFadeInTime);
-        }
-        else
-        {
-            Debug.LogWarning("[CodeDoor] No hay SceneFader.Instance. Cargando escena final sin fade.");
-            SceneManager.LoadScene(finalSceneName);
         }
     }
 

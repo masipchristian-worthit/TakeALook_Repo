@@ -272,9 +272,9 @@ public class EnemyAIBase : MonoBehaviour
         }
         AudioManager.Instance?.PlaySFX(sfxRoarId, transform.position);
 
-        // Disparar el proyectil a mitad de la duración del roar (solo si sigue atacando)
+        // Disparar el proyectil a mitad de la duración del roar
         yield return new WaitForSeconds(roarTotalDuration * 0.5f);
-        if (_state == EnemyState.Attacking) FireProjectile();
+        FireProjectile();
 
         // Esperar a que termine la animación de roar
         float t = roarTotalDuration * 0.5f;
@@ -324,7 +324,7 @@ public class EnemyAIBase : MonoBehaviour
 
     void FireProjectile()
     {
-        if (projectilePrefab == null || shootPoint == null || target == null) return;
+        if (projectilePrefab == null || shootPoint == null) return;
         Vector3 aimPoint = target.position + Vector3.up * 1.0f; Vector3 dir = (aimPoint - shootPoint.position).normalized;
         GameObject proj = Instantiate(projectilePrefab, shootPoint.position, Quaternion.LookRotation(dir));
         if (!proj.activeSelf) proj.SetActive(true);
