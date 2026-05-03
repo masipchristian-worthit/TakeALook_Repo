@@ -98,29 +98,59 @@ public class ItemPreview3D : MonoBehaviour
         go.transform.SetParent(previewCamera.transform, worldPositionStays: false);
         go.transform.localPosition = new Vector3(0f, 0f, 1.5f);
         go.transform.localRotation = Quaternion.identity;
-        // Hereda el layer de la cámara para que el camera culling mask lo capture.
-        go.layer = previewCamera.gameObject.layer;
+        // Layer dentro de la culling mask de la cámara: si la cámara está en otro layer
+        // (p.ej. UI) pero su culling mask sólo incluye "ItemUI", queremos el del mask.
+        go.layer = GetCullingMaskLayer();
         modelAnchor = go.transform;
     }
 
-    // Crea una RenderTexture en runtime con depth buffer válido y la asigna a la
-    // cámara y a la RawImage. Esto evita el warning del Render Graph API que aparece
-    // cuando una RT serializada en disco no tiene depth (URP la rechaza).
+    // Devuelve un layer que la previewCamera realmente vea según su culling mask.
+    // Si la cámara está en layer UI pero su culling mask es ItemUI, propagamos ItemUI
+    // al modelo — propagar el layer del GameObject de la cámara haría que la propia
+    // cámara descartase el modelo por culling.
+    private int GetCullingMaskLayer()
+    {
+        if (previewCamera == null) return 0;
+        int mask = previewCamera.cullingMask;
+        if (mask == 0) return previewCamera.gameObject.layer;
+        for (int i = 0; i < 32; i++)
+        {
+            if ((mask & (1 << i)) != 0) return i;
+        }
+        return previewCamera.gameObject.layer;
+    }
+
+    // Crea una RenderTexture en runtime con depthStencilFormat válido y la asigna a la
+    // cámara y a la RawImage. Render Graph API (Unity 6 / URP) exige depthStencilFormat
+    // distinto de None: el constructor antiguo con int "depth" ya no es suficiente, así
+    // que usamos RenderTextureDescriptor con D24_UNorm_S8_UInt explícito.
+    // Además, antes de hacer el setup desactivamos brevemente la cámara para que no intente
+    // renderizar la RT serializada (rota) que pueda traer asignada desde la escena.
     private void SetupRenderTexture()
     {
         if (previewCamera == null) return;
 
-        _rt = new RenderTexture(rtWidth, rtHeight, Mathf.Max(16, rtDepthBits), RenderTextureFormat.ARGB32)
+        bool wasEnabled = previewCamera.enabled;
+        previewCamera.enabled = false;
+        previewCamera.targetTexture = null;
+
+        var desc = new RenderTextureDescriptor(rtWidth, rtHeight, RenderTextureFormat.ARGB32, 0)
+        {
+            depthStencilFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.D24_UNorm_S8_UInt,
+            msaaSamples = 1,
+            useMipMap = false
+        };
+
+        _rt = new RenderTexture(desc)
         {
             name = "ItemPreview3D_RT_runtime",
-            antiAliasing = 1,
-            useMipMap = false,
             wrapMode = TextureWrapMode.Clamp,
             filterMode = FilterMode.Bilinear
         };
         _rt.Create();
 
         previewCamera.targetTexture = _rt;
+        previewCamera.enabled = wasEnabled;
         if (targetRawImage != null) targetRawImage.texture = _rt;
     }
 
@@ -164,11 +194,12 @@ public class ItemPreview3D : MonoBehaviour
         _currentModel.transform.localRotation = Quaternion.identity;
         _baseLocalPos = _currentModel.transform.localPosition;
 
-        // Para que el camera culling mask lo recoja, propaga el layer de la cámara
-        // al modelo y a todos sus hijos. Si la cámara culling mask incluye el layer
-        // del objeto raíz pero el modelo viene en otro layer, se quedaba invisible.
+        // Para que el camera culling mask lo recoja, propaga un layer que la cámara
+        // SÍ renderice (basado en culling mask, no en el layer del GameObject de la
+        // cámara): los prefabs vienen del mundo en layer "Interactable" y la cámara
+        // de preview suele tener otra culling mask dedicada.
         if (previewCamera != null)
-            SetLayerRecursively(_currentModel, previewCamera.gameObject.layer);
+            SetLayerRecursively(_currentModel, GetCullingMaskLayer());
 
         if (targetRawImage != null) targetRawImage.enabled = true;
 
