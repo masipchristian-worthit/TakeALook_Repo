@@ -6,13 +6,8 @@ using DG.Tweening;
 
 /// <summary>
 /// Gestiona la pantalla de derrota del juego.
-/// Se activa cuando el jugador muere (PlayerHealth.OnDied) o cuando el temporizador llega a 0 (CountdownTimer.onTimerEnded).
-/// Muestra un fade-in con el motivo de derrota y carga el Main Menu automáticamente.
-/// 
-/// Setup:
-///   1. Crea un Canvas con un CanvasGroup fullscreen oscuro + dos TMP_Text (título y subtítulo).
-///   2. Asigna las referencias en el Inspector.
-///   3. Asegúrate de que el nombre de la escena del Main Menu coincide con mainMenuSceneName.
+/// Se activa cuando el jugador muere o cuando el temporizador llega a 0.
+/// Muestra una pantalla de derrota con un único botón para volver al Main Menu.
 /// </summary>
 public class DefeatManager : MonoBehaviour
 {
@@ -27,15 +22,17 @@ public class DefeatManager : MonoBehaviour
     [SerializeField] private TMP_Text defeatTitleLabel;
     [SerializeField] private TMP_Text defeatSubtitleLabel;
 
+    [Header("Botón")]
+    [SerializeField] private Button mainMenuButton;
+
     [Header("Textos")]
-    [SerializeField] private string titleText = "DERROTA";
-    [SerializeField] private string subtitleDeathText = "Has muerto.";
-    [SerializeField] private string subtitleTimerText = "Se acabó el tiempo...";
+    [SerializeField] private string titleText = "DEFEAT";
+    [SerializeField] private string subtitleDeathText = "You died.";
+    [SerializeField] private string subtitleTimerText = "Time has run out.";
 
     [Header("Transición")]
     [SerializeField] private float fadeInTime = 1.2f;
-    [SerializeField] private float delayBeforeMenu = 3.5f;
-    [SerializeField] private string mainMenuSceneName = "MainMenu";
+    [SerializeField] private string mainMenuSceneName = "SCN_MainMenu";
 
     [Header("Audio")]
     [SerializeField] private string defeatSfxId = "defeat";
@@ -49,20 +46,26 @@ public class DefeatManager : MonoBehaviour
             Destroy(gameObject);
             return;
         }
+
         Instance = this;
 
-        // Aseguramos que la pantalla empieza invisible y sin bloquear input
         if (defeatCanvasGroup != null)
         {
             defeatCanvasGroup.alpha = 0f;
             defeatCanvasGroup.blocksRaycasts = false;
             defeatCanvasGroup.interactable = false;
         }
+
+        if (mainMenuButton != null)
+        {
+            mainMenuButton.gameObject.SetActive(false);
+            mainMenuButton.onClick.RemoveAllListeners();
+            mainMenuButton.onClick.AddListener(GoToMainMenu);
+        }
     }
 
     private void Start()
     {
-        // Suscribirse a los eventos de derrota
         if (playerHealth != null)
             playerHealth.OnDied += HandlePlayerDeath;
 
@@ -72,7 +75,6 @@ public class DefeatManager : MonoBehaviour
 
     private void OnDestroy()
     {
-        // Limpieza de suscripciones para evitar memory leaks
         if (playerHealth != null)
             playerHealth.OnDied -= HandlePlayerDeath;
 
@@ -80,32 +82,38 @@ public class DefeatManager : MonoBehaviour
             countdownTimer.onTimerEnded.RemoveListener(HandleTimerEnd);
     }
 
-    // ─── Handlers ───────────────────────────────────────────────────────────
+    private void HandlePlayerDeath()
+    {
+        TriggerDefeat(subtitleDeathText);
+    }
 
-    private void HandlePlayerDeath() => TriggerDefeat(subtitleDeathText);
-    private void HandleTimerEnd() => TriggerDefeat(subtitleTimerText);
+    private void HandleTimerEnd()
+    {
+        TriggerDefeat(subtitleTimerText);
+    }
 
-    // ─── Lógica principal ────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Activa la pantalla de derrota. Se puede llamar desde código externo si es necesario.
-    /// </summary>
     public void TriggerDefeat(string reason = "")
     {
         if (_isDefeated) return;
         _isDefeated = true;
 
-       
+        Time.timeScale = 0f;
+        Time.fixedDeltaTime = 0.02f;
+
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
 
         AudioManager.Instance?.PlayUI(defeatSfxId);
 
-        // Aplicar textos
-        if (defeatTitleLabel != null) defeatTitleLabel.text = titleText;
-        if (defeatSubtitleLabel != null) defeatSubtitleLabel.text = reason;
+        if (defeatTitleLabel != null)
+            defeatTitleLabel.text = titleText;
 
-        // Fade-in de la pantalla de derrota
+        if (defeatSubtitleLabel != null)
+            defeatSubtitleLabel.text = reason;
+
+        if (mainMenuButton != null)
+            mainMenuButton.gameObject.SetActive(true);
+
         if (defeatCanvasGroup != null)
         {
             defeatCanvasGroup.blocksRaycasts = true;
@@ -114,24 +122,27 @@ public class DefeatManager : MonoBehaviour
             defeatCanvasGroup
                 .DOFade(1f, fadeInTime)
                 .SetEase(Ease.InQuad)
-                .SetUpdate(true) // funciona aunque Time.timeScale == 0
-                .OnComplete(ScheduleMenuLoad);
+                .SetUpdate(true);
+        }
+    }
+
+    public void GoToMainMenu()
+    {
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        GameManager.Instance?.ResetRunState();
+
+        if (SceneFader.Instance != null)
+        {
+            SceneFader.Instance.FadeToSceneWithFadeIn(mainMenuSceneName, 0.5f, 0.7f);
         }
         else
         {
-            ScheduleMenuLoad();
+            SceneManager.LoadScene(mainMenuSceneName);
         }
-    }
-
-    private void ScheduleMenuLoad()
-    {
-        DOVirtual.DelayedCall(delayBeforeMenu, GoToMainMenu)
-            .SetUpdate(true);
-    }
-
-    private void GoToMainMenu()
-    {
-        GameManager.Instance?.ResetRunState();
-        SceneManager.LoadScene(mainMenuSceneName);
     }
 }
