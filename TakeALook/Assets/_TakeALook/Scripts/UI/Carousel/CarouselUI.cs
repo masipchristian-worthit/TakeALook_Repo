@@ -15,11 +15,16 @@ using TMPro;
 public class CarouselUI : MonoBehaviour
 {
     public enum FocusState { Unfocused = 0, Preview = 1, Focused = 2 }
+    public enum CarouselKind { Auto = 0, Ammo = 1, Inventory = 2 }
 
     public struct Entry
     {
         public ItemData data;
         public int count;
+        // Si > 0, se muestra junto a count en el reserveLabel: "count / maxCount".
+        // Para Ammo: count = balas en cargador, maxCount = reserva máxima del tipo.
+        // Para Inventory: count = stack actual, maxCount = ItemData.maxStack.
+        public int maxCount;
     }
 
     [Header("Slots")]
@@ -38,6 +43,10 @@ public class CarouselUI : MonoBehaviour
     [SerializeField] private string scrollSfxId = "ui_swap";
     [SerializeField] private string emptySfxId = "ui_deny";
 
+    [Header("Tipo de carrusel")]
+    [Tooltip("Auto = se detecta por el nombre del GameObject (busca 'ammo' o 'inventory'). Forzar a Ammo/Inventory si el nombre no es claro.")]
+    [SerializeField] private CarouselKind carouselKind = CarouselKind.Auto;
+
     [Header("Labels compartidos (auto-wire si están vacíos)")]
     [Tooltip("Muestra el nombre del item central. Si está vacío, se busca un hijo cuyo nombre contenga 'name' o 'title'.")]
     [SerializeField] private TMP_Text nameLabel;
@@ -45,6 +54,10 @@ public class CarouselUI : MonoBehaviour
     [SerializeField] private TMP_Text countLabel;
     [Tooltip("Muestra la descripción del item central. Auto-wire por nombre 'desc'.")]
     [SerializeField] private TMP_Text descriptionLabel;
+    [Tooltip("Muestra 'balas en inventario / balas máximas' (o stack/maxStack para inventario). Auto-wire por nombre 'reserve', 'max', 'capacity' o 'ammo'.")]
+    [SerializeField] private TMP_Text reserveLabel;
+    [Tooltip("Formato: {0}=actual {1}=máximo. Por defecto '{0} / {1}'.")]
+    [SerializeField] private string reserveFormat = "{0} / {1}";
 
     [Header("Empty State")]
     [SerializeField] private TMP_Text emptyMessage;
@@ -57,7 +70,11 @@ public class CarouselUI : MonoBehaviour
 
     [Header("Borde de foco")]
     [SerializeField] private Image focusBorder;
+    [Tooltip("Color del borde cuando el carrusel tiene foco completo (estás dentro de items, has pulsado E).")]
     [SerializeField] private Color focusedBorderColor = new Color(1f, 0.85f, 0.3f, 1f);
+    [Tooltip("Color del borde cuando el carrusel está preseleccionado (pestaña activa pero sin entrar todavía con E).")]
+    [SerializeField] private Color previewBorderColor = new Color(1f, 1f, 1f, 0.6f);
+    [Tooltip("Color del borde cuando el carrusel no es la pestaña activa.")]
     [SerializeField] private Color unfocusedBorderColor = new Color(1f, 1f, 1f, 0.25f);
 
     [Header("Highlight (pulse en Update sobre el slot central con foco)")]
@@ -90,23 +107,24 @@ public class CarouselUI : MonoBehaviour
     public int Count => _entries.Count;
     public Entry? CurrentEntry => _entries.Count == 0 ? (Entry?)null : _entries[_centerIndex];
     public bool HasFocus => _hasFocus;
+    public CarouselKind Kind => carouselKind != CarouselKind.Auto
+        ? carouselKind
+        : (_isAmmoCarousel ? CarouselKind.Ammo : CarouselKind.Inventory);
 
     private void Awake()
     {
-        _isAmmoCarousel = gameObject.name.ToLowerInvariant().Contains("ammo");
+        // Resuelve el tipo: el campo del inspector tiene prioridad; en Auto se mira el nombre.
+        if (carouselKind == CarouselKind.Auto)
+            _isAmmoCarousel = gameObject.name.ToLowerInvariant().Contains("ammo");
+        else
+            _isAmmoCarousel = (carouselKind == CarouselKind.Ammo);
+
         AutoWireLabels();
         DiagnoseLayout();
         BuildSlots();
-        WireItemPreview3D();
-    }
-
-    private void WireItemPreview3D()
-    {
-        // Busca la RawImage que renderiza el modelo 3D (dentro del carrusel) y la
-        // asigna a ItemPreview3D.Instance para que sepa dónde mostrar la RenderTexture.
-        var rawImage = GetComponentInChildren<RawImage>(true);
-        if (rawImage != null)
-            ItemPreview3D.Instance?.SetTargetRawImage(rawImage);
+        // Nota: ya no se asigna un targetRawImage centralizado al ItemPreview3D.
+        // Cada CarouselSlot enciende su propio modelPreview cuando es el central
+        // y le pega la RenderTexture del singleton (ver CarouselSlot.ApplyVisuals).
     }
 
     private void AutoWireLabels()
@@ -114,6 +132,7 @@ public class CarouselUI : MonoBehaviour
         if (nameLabel == null) nameLabel = FindLabel("name", "title");
         if (countLabel == null) countLabel = FindLabel("count", "amount");
         if (descriptionLabel == null) descriptionLabel = FindLabel("desc");
+        if (reserveLabel == null) reserveLabel = FindLabel("reserve", "max", "capacity", "ammo");
     }
 
     private TMP_Text FindLabel(params string[] keywords)
@@ -231,31 +250,16 @@ public class CarouselUI : MonoBehaviour
             SaveCurrentIndex();
         }
 
-        float alpha = focusState switch
-        {
-            FocusState.Unfocused => unfocusedAlpha,
-            FocusState.Preview => Mathf.Lerp(unfocusedAlpha, focusedAlpha, 0.5f),
-            FocusState.Focused => focusedAlpha,
-            _ => unfocusedAlpha
-        };
-
+        // El alpha del carrusel SIEMPRE se mantiene a focusedAlpha: queremos que
+        // los slots de ambos carruseles permanezcan visibles aunque sólo uno tenga
+        // el foco. La distinción visual es el borde + el pulse del slot central.
         if (focusCanvasGroup != null)
-            focusCanvasGroup.alpha = alpha;
+            focusCanvasGroup.alpha = focusedAlpha;
 
+        // El color del borde lo escribe Update() cada frame en función de _focusState,
+        // así que aquí basta con dejar la inicialización para el primer frame.
         if (focusBorder != null)
-        {
-            Color borderColor = focusState switch
-            {
-                FocusState.Unfocused => unfocusedBorderColor,
-                FocusState.Preview => new Color(
-                    focusedBorderColor.r, focusedBorderColor.g, focusedBorderColor.b,
-                    focusedBorderColor.a * 0.6f
-                ),
-                FocusState.Focused => focusedBorderColor,
-                _ => unfocusedBorderColor
-            };
-            focusBorder.color = borderColor;
-        }
+            focusBorder.color = ColorForState(_focusState);
 
         ApplyCenterPreview();
     }
@@ -385,7 +389,7 @@ public class CarouselUI : MonoBehaviour
         var center = _slots[half];
         if (center == null) return;
 
-        if (_hasFocus)
+        if (_focusState == FocusState.Focused)
         {
             float wave = Mathf.Sin(Time.unscaledTime * highlightPulseSpeed); // -1..1
             float pulse = 1f + (wave * 0.5f + 0.5f) * highlightScaleAmount;  // 1..1+amount
@@ -400,10 +404,20 @@ public class CarouselUI : MonoBehaviour
         }
         else
         {
-            // Sin foco: escala fija, borde en color unfocused (forzado cada frame).
+            // Preview / Unfocused: escala fija, borde en su color correspondiente.
             center.Root.localScale = Vector3.one * centerScale;
             if (focusBorder != null)
-                focusBorder.color = unfocusedBorderColor;
+                focusBorder.color = ColorForState(_focusState);
+        }
+    }
+
+    private Color ColorForState(FocusState state)
+    {
+        switch (state)
+        {
+            case FocusState.Focused: return focusedBorderColor;
+            case FocusState.Preview: return previewBorderColor;
+            default: return unfocusedBorderColor;
         }
     }
 
@@ -417,6 +431,15 @@ public class CarouselUI : MonoBehaviour
             countLabel.text = (hasItem && entry.Value.data.isStackable) ? $"x{entry.Value.count}" : "";
         if (descriptionLabel != null)
             descriptionLabel.text = hasItem ? (entry.Value.data.description ?? "") : "";
+
+        // Reserve / max: sólo se muestra si la entrada tiene un maxCount > 0.
+        if (reserveLabel != null)
+        {
+            if (hasItem && entry.Value.maxCount > 0)
+                reserveLabel.text = string.Format(reserveFormat, entry.Value.count, entry.Value.maxCount);
+            else
+                reserveLabel.text = "";
+        }
     }
 
     private void ApplyCenterPreview()

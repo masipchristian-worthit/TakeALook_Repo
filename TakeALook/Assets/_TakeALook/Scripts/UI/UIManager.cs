@@ -251,15 +251,18 @@ public class UIManager : MonoBehaviour
         bool changed = (ActiveTab != type);
         ActiveTab = type;
 
-        if (ammoTabContent != null) ammoTabContent.SetActive(type == TabType.Ammo);
-        if (inventoryTabContent != null) inventoryTabContent.SetActive(type == TabType.Inventory);
+        // Antes se hacía SetActive(false) de la pestaña inactiva, lo cual apagaba
+        // los slots del otro carrusel. Ahora ambos GameObjects de tab content quedan
+        // SIEMPRE activos: la distinción de "qué pestaña está seleccionada" se hace
+        // sólo con el borde de foco + pulse del slot central (ver SetFocus).
+        if (ammoTabContent != null && !ammoTabContent.activeSelf) ammoTabContent.SetActive(true);
+        if (inventoryTabContent != null && !inventoryTabContent.activeSelf) inventoryTabContent.SetActive(true);
 
         if (changed && !instant) AudioManager.Instance?.PlayUI(tabSwapSfxId);
 
         // El foco se PRESERVA al cambiar de pestaña: si estabas dentro de los items
         // del carrusel de munición y saltas al de inventario, sigues con el slot
         // central seleccionado en el nuevo carrusel — sin tener que volver a entrar.
-        // Esto permite navegar entre carruseles sin depender de TAB.
         SetFocus(Focus);
     }
 
@@ -271,37 +274,50 @@ public class UIManager : MonoBehaviour
         Focus = level;
         bool itemsFocused = (level == FocusLevel.Items);
 
-        CarouselUI.FocusState activeState = itemsFocused
-            ? CarouselUI.FocusState.Focused
-            : CarouselUI.FocusState.Preview;
+        // Resolución robusta: en lugar de fiarnos del orden ammoCarousel/inventoryCarousel
+        // del inspector (que puede estar invertido y provocar que el borde aparezca
+        // sobre el carrusel equivocado), elegimos active/inactive consultando el Kind
+        // de cada CarouselUI. Si los wires están cruzados, esto los corrige.
+        CarouselUI active, inactive;
+        ResolveActiveInactive(out active, out inactive);
 
-        // El carrusel inactivo se queda en Preview (no Unfocused) para que su slot
-        // central siga visible/encendido al pasar de una pestaña a otra. Sólo el
-        // carrusel activo entra en Focused cuando estamos en el nivel de items.
-        // Inactivo primero, activo después: si comparten el mismo CanvasGroup,
-        // el activo siempre gana la última escritura del alpha.
-        if (ActiveTab == TabType.Ammo)
+        // Inactivo primero, activo después: si comparten el mismo CanvasGroup
+        // (raro pero posible), el activo gana la última escritura.
+        //   Unfocused = pestaña no seleccionada (color apagado).
+        //   Preview   = pestaña activa pero todavía no entraste con E (tercer color, "preselección").
+        //   Focused   = pestaña activa + dentro de items (pulse + color de foco).
+        inactive?.SetFocusState(CarouselUI.FocusState.Unfocused);
+        active?.SetFocusState(itemsFocused ? CarouselUI.FocusState.Focused : CarouselUI.FocusState.Preview);
+    }
+
+    private void ResolveActiveInactive(out CarouselUI active, out CarouselUI inactive)
+    {
+        var wantsAmmo = (ActiveTab == TabType.Ammo);
+        active = null; inactive = null;
+
+        // Considera ambos carruseles wired y elige por Kind.
+        foreach (var c in new[] { ammoCarousel, inventoryCarousel })
         {
-            inventoryCarousel?.SetFocusState(CarouselUI.FocusState.Preview);
-            ammoCarousel?.SetFocusState(activeState);
-        }
-        else
-        {
-            ammoCarousel?.SetFocusState(CarouselUI.FocusState.Preview);
-            inventoryCarousel?.SetFocusState(activeState);
+            if (c == null) continue;
+            bool isAmmo = (c.Kind == CarouselUI.CarouselKind.Ammo);
+            if (isAmmo == wantsAmmo) active = c;
+            else inactive = c;
         }
 
-        // No tocamos tabsRoot.localScale: en la escena actual ese ref está
-        // apuntando a un nodo que arrastra todo el panel y al entrar a items
-        // hacía que la UI entera se viera más pequeña. El feedback de foco ya
-        // lo da el alpha del carrusel y el borde de foco.
+        // Fallback por si los wires están invertidos: si el "active" salió null
+        // pero hay alguno wired, asume orden literal del inspector.
+        if (active == null)
+            active = wantsAmmo ? ammoCarousel : inventoryCarousel;
+        if (inactive == null)
+            inactive = wantsAmmo ? inventoryCarousel : ammoCarousel;
     }
     #endregion
 
     #region Use
     private CarouselUI GetActiveCarousel()
     {
-        return ActiveTab == TabType.Ammo ? ammoCarousel : inventoryCarousel;
+        ResolveActiveInactive(out var active, out _);
+        return active;
     }
 
     private void UseSelected()

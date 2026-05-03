@@ -39,6 +39,9 @@ public class ItemPreview3D : MonoBehaviour
     private Vector3 _baseLocalPos;
     private RenderTexture _rt;
 
+    /// <summary>RenderTexture activa de la cámara. La usa CarouselSlot para mostrarla en su modelPreview.</summary>
+    public RenderTexture RT => _rt;
+
     private void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
@@ -72,16 +75,32 @@ public class ItemPreview3D : MonoBehaviour
         if (targetRawImage == null) targetRawImage = GetComponentInChildren<RawImage>(true);
         if (modelAnchor == null)
         {
-            // Busca un hijo cuyo nombre contenga "anchor" o "model"; si no, usa
-            // el propio transform de la cámara como punto de spawn.
+            // Busca un hijo cuyo nombre contenga "anchor" o "model".
             foreach (var t in GetComponentsInChildren<Transform>(true))
             {
                 if (t == transform) continue;
+                if (previewCamera != null && t == previewCamera.transform) continue;
                 string n = t.name.ToLowerInvariant();
                 if (n.Contains("anchor") || n.Contains("model")) { modelAnchor = t; break; }
             }
-            if (modelAnchor == null && previewCamera != null) modelAnchor = previewCamera.transform;
         }
+        // Última red de seguridad: si no hay anchor, créalo como hijo de la cámara
+        // a una distancia razonable hacia adelante para que el modelo entre en cuadro.
+        EnsureModelAnchor();
+    }
+
+    private void EnsureModelAnchor()
+    {
+        if (modelAnchor != null) return;
+        if (previewCamera == null) return;
+
+        var go = new GameObject("AutoModelAnchor");
+        go.transform.SetParent(previewCamera.transform, worldPositionStays: false);
+        go.transform.localPosition = new Vector3(0f, 0f, 1.5f);
+        go.transform.localRotation = Quaternion.identity;
+        // Hereda el layer de la cámara para que el camera culling mask lo capture.
+        go.layer = previewCamera.gameObject.layer;
+        modelAnchor = go.transform;
     }
 
     // Crea una RenderTexture en runtime con depth buffer válido y la asigna a la
@@ -116,13 +135,26 @@ public class ItemPreview3D : MonoBehaviour
     /// </summary>
     public void Show(ItemData data)
     {
-        if (data == _currentData) return;
+        // Importante: si el data coincide pero no llegó a instanciarse el modelo
+        // (porque al primer Show el anchor o la RawImage no estaban listos),
+        // dejamos que vuelva a entrar para reintentar.
+        if (data == _currentData && _currentModel != null) return;
 
         _currentData = data;
         ClearCurrent();
 
-        if (data == null || data.previewMode != ItemData.PreviewMode.Model3D || data.model3D == null || modelAnchor == null)
+        if (data == null || data.previewMode != ItemData.PreviewMode.Model3D || data.model3D == null)
         {
+            if (targetRawImage != null) targetRawImage.enabled = false;
+            return;
+        }
+
+        // Si todavía no hay anchor, intenta crearlo (puede pasar si previewCamera
+        // se asigna programáticamente después del Awake).
+        EnsureModelAnchor();
+        if (modelAnchor == null)
+        {
+            Debug.LogWarning("[ItemPreview3D] No hay modelAnchor disponible: el modelo 3D no se instanciará.", this);
             if (targetRawImage != null) targetRawImage.enabled = false;
             return;
         }
@@ -132,9 +164,23 @@ public class ItemPreview3D : MonoBehaviour
         _currentModel.transform.localRotation = Quaternion.identity;
         _baseLocalPos = _currentModel.transform.localPosition;
 
+        // Para que el camera culling mask lo recoja, propaga el layer de la cámara
+        // al modelo y a todos sus hijos. Si la cámara culling mask incluye el layer
+        // del objeto raíz pero el modelo viene en otro layer, se quedaba invisible.
+        if (previewCamera != null)
+            SetLayerRecursively(_currentModel, previewCamera.gameObject.layer);
+
         if (targetRawImage != null) targetRawImage.enabled = true;
 
         SetSelected(_isSelected);
+    }
+
+    private static void SetLayerRecursively(GameObject go, int layer)
+    {
+        if (go == null) return;
+        go.layer = layer;
+        foreach (Transform child in go.transform)
+            SetLayerRecursively(child.gameObject, layer);
     }
 
     /// <summary>
@@ -176,6 +222,16 @@ public class ItemPreview3D : MonoBehaviour
         targetRawImage = rawImage;
         if (targetRawImage != null && _rt != null)
             targetRawImage.texture = _rt;
+
+        // Si la primera vez que llamaron Show la RawImage o el anchor no estaban,
+        // _currentModel se quedó null y los siguientes Show() con el mismo data
+        // se descartaban. Forzamos un retry borrando la cache.
+        if (_currentModel == null && _currentData != null)
+        {
+            var data = _currentData;
+            _currentData = null;
+            Show(data);
+        }
     }
 
     private void ClearCurrent()

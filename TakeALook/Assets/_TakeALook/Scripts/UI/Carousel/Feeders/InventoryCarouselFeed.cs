@@ -27,7 +27,10 @@ public class InventoryCarouselFeed : MonoBehaviour
 
         var entries = new List<CarouselUI.Entry>(inventory.Slots.Count);
         foreach (var slot in inventory.Slots)
-            entries.Add(new CarouselUI.Entry { data = slot.data, count = slot.count });
+        {
+            int max = (slot.data != null && slot.data.isStackable) ? slot.data.maxStack : 0;
+            entries.Add(new CarouselUI.Entry { data = slot.data, count = slot.count, maxCount = max });
+        }
 
         carousel.SetEntries(entries, inventory.CurrentIndex);
     }

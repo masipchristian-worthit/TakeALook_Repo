@@ -71,16 +71,12 @@ public class AmmoCarouselFeed : MonoBehaviour
         {
             var data = GetDataFor(t);
             if (data == null) continue;
-            int mag = gunSystem.GetMag(t);
             int reserve = gunSystem.GetReserve(t);
-            int cap = gunSystem.GetMagCapacity(t);
-            int count = mag + reserve;
+            int maxReserve = gunSystem.GetMaxReserve(t);
 
-            // Truco: usamos count como "cantidad" para que el slot muestre el formato.
-            // El slot muestra "x{count}" por defecto; aquí lo personalizamos vía data.displayName parcial.
-            // Para simplicidad, el slot muestra count - el formato extendido se podría implementar en CarouselSlot
-            // si añades un campo extra. Aquí usamos count = mag (lo que suele importar más).
-            entries.Add(new CarouselUI.Entry { data = data, count = mag });
+            // count = balas EN INVENTARIO (reserva). maxCount = balas máximas para
+            // que el reserveLabel del carrusel pinte "balas en inventario / balas máximas".
+            entries.Add(new CarouselUI.Entry { data = data, count = reserve, maxCount = maxReserve });
         }
 
         // Reordenar: tipo activo primero (centro)
