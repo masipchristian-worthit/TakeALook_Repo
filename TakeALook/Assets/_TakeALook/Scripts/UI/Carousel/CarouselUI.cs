@@ -428,7 +428,12 @@ public class CarouselUI : MonoBehaviour
 
         if (nameLabel != null) nameLabel.text = hasItem ? entry.Value.data.displayName : "";
         if (countLabel != null)
-            countLabel.text = (hasItem && entry.Value.data.isStackable) ? $"x{entry.Value.count}" : "";
+        {
+            if (hasItem && _isAmmoCarousel)
+                countLabel.text = $"{entry.Value.count}";
+            else
+                countLabel.text = (hasItem && entry.Value.data.isStackable) ? $"x{entry.Value.count}" : "";
+        }
         if (descriptionLabel != null)
             descriptionLabel.text = hasItem ? (entry.Value.data.description ?? "") : "";
 
