@@ -34,6 +34,11 @@ public class DoorOpen : MonoBehaviour
         closedPosition = transform.position;
         openPosition = closedPosition + Vector3.up * openHeight;
 
+        TryFindPlayer();
+    }
+
+    void TryFindPlayer()
+    {
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null)
             player = playerObj.transform;
@@ -41,7 +46,10 @@ public class DoorOpen : MonoBehaviour
 
     private void Update()
     {
-        if (player == null) return;
+        if (player == null) { TryFindPlayer(); if (player == null) return; }
+
+        if (Time.frameCount % 60 == 0)
+            Debug.Log($"[Door {name}] player={(player==null?"NULL":player.name)} dist={(player==null?-1:Vector3.Distance(player.position, closedPosition))}");
 
         float distance = Vector3.Distance(player.position, closedPosition);
 

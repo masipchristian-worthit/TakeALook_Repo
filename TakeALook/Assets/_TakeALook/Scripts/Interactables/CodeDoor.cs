@@ -11,28 +11,28 @@ using UnityEngine.EventSystems;
 public class CodeDoor : MonoBehaviour
 {
     [Header("Persistent Unlock")]
-    [Tooltip("ID único de esta puerta. No repitas el mismo ID en dos puertas distintas.")]
+    [Tooltip("ID ï¿½nico de esta puerta. No repitas el mismo ID en dos puertas distintas.")]
     [SerializeField] string doorId = "Door_01";
 
-    [Tooltip("Si está activado, la puerta seguirá desbloqueada aunque cambies de escena o reinicies el juego.")]
+    [Tooltip("Si estï¿½ activado, la puerta seguirï¿½ desbloqueada aunque cambies de escena o reinicies el juego.")]
     [SerializeField] bool saveInPlayerPrefs = true;
 
     static HashSet<string> unlockedDoorsThisSession = new HashSet<string>();
 
     [Header("Final Door Warp")]
-    [Tooltip("Activa esto SOLO en la puerta final. Las demás puertas deben tenerlo desactivado.")]
+    [Tooltip("Activa esto SOLO en la puerta final. Las demï¿½s puertas deben tenerlo desactivado.")]
     [SerializeField] bool warpOnCorrectCode = false;
 
-    [Tooltip("Escena a la que irá cuando esta puerta final acepte el código.")]
+    [Tooltip("Escena a la que irï¿½ cuando esta puerta final acepte el cï¿½digo.")]
     [SerializeField] string finalSceneName = "FinalDialogueScene";
 
-    [Tooltip("Tiempo de espera después de aceptar el código antes de cambiar de escena.")]
+    [Tooltip("Tiempo de espera despuï¿½s de aceptar el cï¿½digo antes de cambiar de escena.")]
     [SerializeField] float delayBeforeFinalWarp = 1.4f;
 
-    [Tooltip("Duración del fade a negro.")]
+    [Tooltip("Duraciï¿½n del fade a negro.")]
     [SerializeField] float finalFadeOutTime = 0.8f;
 
-    [Tooltip("Duración del fade in en la escena final.")]
+    [Tooltip("Duraciï¿½n del fade in en la escena final.")]
     [SerializeField] float finalFadeInTime = 0.8f;
 
     [Header("Door Movement")]
@@ -88,9 +88,7 @@ public class CodeDoor : MonoBehaviour
 
         LoadDoorUnlockState();
 
-        GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
-        if (playerObj != null)
-            player = playerObj.transform;
+        TryFindPlayer();
 
         if (pressEText != null)
             pressEText.SetActive(false);
@@ -114,9 +112,19 @@ public class CodeDoor : MonoBehaviour
             interactionPoint = transform;
     }
 
+    void TryFindPlayer()
+    {
+        GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
+        if (playerObj != null)
+            player = playerObj.transform;
+    }
+
     private void Update()
     {
-        if (player == null) return;
+        if (player == null) { TryFindPlayer(); if (player == null) return; }
+
+        if (Time.frameCount % 60 == 0)
+            Debug.Log($"[CodeDoor {name}] player={(player==null?"NULL":player.name)} distToDoor={(player==null?-1:Vector3.Distance(player.position, transform.position))}");
 
         float distanceToPanel = Vector3.Distance(player.position, interactionPoint.position);
         float distanceToDoor = Vector3.Distance(player.position, transform.position);

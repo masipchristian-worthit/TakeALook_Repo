@@ -39,6 +39,11 @@ public class BigDoorController : MonoBehaviour
         leftOpenPos = leftClosedPos + Vector3.left * openDistanceSide;
         rightOpenPos = rightClosedPos + Vector3.right * openDistanceSide;
 
+        TryFindPlayer();
+    }
+
+    void TryFindPlayer()
+    {
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
         if (playerObj != null)
             player = playerObj.transform;
@@ -46,7 +51,10 @@ public class BigDoorController : MonoBehaviour
 
     private void Update()
     {
-        if (player == null) return;
+        if (player == null) { TryFindPlayer(); if (player == null) return; }
+
+        if (Time.frameCount % 60 == 0)
+            Debug.Log($"[BigDoor {name}] player={(player==null?"NULL":player.name)} dist={(player==null?-1:Vector3.Distance(player.position, transform.position))}");
 
         float distance = Vector3.Distance(player.position, transform.position);
 
