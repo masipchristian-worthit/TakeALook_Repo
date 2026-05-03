@@ -53,9 +53,6 @@ public class BigDoorController : MonoBehaviour
     {
         if (player == null) { TryFindPlayer(); if (player == null) return; }
 
-        if (Time.frameCount % 60 == 0)
-            Debug.Log($"[BigDoor {name}] player={(player==null?"NULL":player.name)} dist={(player==null?-1:Vector3.Distance(player.position, transform.position))}");
-
         float distance = Vector3.Distance(player.position, transform.position);
 
         if (autoOpen && distance <= openDistance)

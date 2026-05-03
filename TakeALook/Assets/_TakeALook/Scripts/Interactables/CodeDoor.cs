@@ -123,9 +123,6 @@ public class CodeDoor : MonoBehaviour
     {
         if (player == null) { TryFindPlayer(); if (player == null) return; }
 
-        if (Time.frameCount % 60 == 0)
-            Debug.Log($"[CodeDoor {name}] player={(player==null?"NULL":player.name)} distToDoor={(player==null?-1:Vector3.Distance(player.position, transform.position))}");
-
         float distanceToPanel = Vector3.Distance(player.position, interactionPoint.position);
         float distanceToDoor = Vector3.Distance(player.position, transform.position);
 
