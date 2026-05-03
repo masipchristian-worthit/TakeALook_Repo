@@ -1,8 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.UI;
 using UnityEngine.InputSystem;
-using TMPro;
 using DG.Tweening;
 
 /// <summary>
@@ -29,8 +27,14 @@ public class UIManager : MonoBehaviour
     [Header("Refs - Panel")]
     [SerializeField] private RectTransform panelRoot;
     [SerializeField] private CanvasGroup panelCanvasGroup;
-    [SerializeField] private Vector2 panelHiddenAnchoredPos = new Vector2(0, 600);
-    [SerializeField] private Vector2 panelShownAnchoredPos = Vector2.zero;
+    [Tooltip("Posición cuando el panel está completamente fuera de pantalla (solo se usa en startHidden=true / Awake).")]
+    [SerializeField] private Vector2 panelOffscreenPos = new Vector2(-820f, 0f);
+    [Tooltip("Posición de reposo: el panel asoma ligeramente por el borde izquierdo.")]
+    [SerializeField] private Vector2 panelPeekPos = new Vector2(-680f, 0f);
+    [Tooltip("Posición completamente desplegado en el lateral izquierdo.")]
+    [SerializeField] private Vector2 panelShownPos = new Vector2(0f, 0f);
+    [Tooltip("Alpha del panel en estado peek (casi oculto).")]
+    [SerializeField] [Range(0f, 1f)] private float peekAlpha = 0.75f;
     [SerializeField] private float panelTransitionTime = 0.45f;
     [SerializeField] private Ease panelOpenEase = Ease.OutCubic;
     [SerializeField] private Ease panelCloseEase = Ease.InCubic;
@@ -42,8 +46,6 @@ public class UIManager : MonoBehaviour
 
     [Header("Refs - Tabs")]
     [SerializeField] private RectTransform tabsRoot;
-    [SerializeField] private TabButton ammoTabButton;
-    [SerializeField] private TabButton inventoryTabButton;
 
     [Header("Refs - Auxiliares")]
     [SerializeField] private GameObject ammoTabContent;
@@ -64,21 +66,12 @@ public class UIManager : MonoBehaviour
     [SerializeField] private string denySfxId = "ui_deny";
 
     [Header("Estado de inicio")]
-    [SerializeField] private bool startHidden = true;
+    [Tooltip("True: empieza completamente fuera de pantalla (cutscenes/debug). False: empieza en peek (normal).")]
+    [SerializeField] private bool startHidden = false;
 
     public bool IsOpen { get; private set; }
     public TabType ActiveTab { get; private set; } = TabType.Ammo;
     public FocusLevel Focus { get; private set; } = FocusLevel.Tabs;
-
-    [System.Serializable]
-    public class TabButton
-    {
-        public RectTransform root;
-        public Image background;
-        public TMP_Text label;
-        public Color activeColor = Color.white;
-        public Color inactiveColor = new Color(1, 1, 1, 0.4f);
-    }
 
     private void Awake()
     {
@@ -86,6 +79,7 @@ public class UIManager : MonoBehaviour
         Instance = this;
 
         if (startHidden) HideInstant();
+        else ShowPeekInstant();
     }
 
     public bool IsUIPanelOpen() => IsOpen;
@@ -169,12 +163,10 @@ public class UIManager : MonoBehaviour
             panelCanvasGroup.interactable = true;
         }
 
-        if (panelRoot != null) panelRoot.anchoredPosition = panelHiddenAnchoredPos;
-        if (panelCanvasGroup != null) panelCanvasGroup.alpha = 0f;
-
-        Sequence seq = DOTween.Sequence().SetUpdate(true); // unscaled, por si pausas
-        if (panelRoot != null) seq.Join(panelRoot.DOAnchorPos(panelShownAnchoredPos, panelTransitionTime).SetEase(panelOpenEase));
-        if (panelCanvasGroup != null) seq.Join(panelCanvasGroup.DOFade(1f, panelTransitionTime * 0.8f));
+        // Parte desde la posición peek actual hacia la posición desplegada
+        Sequence seq = DOTween.Sequence().SetUpdate(true);
+        if (panelRoot != null) seq.Join(panelRoot.DOAnchorPos(panelShownPos, panelTransitionTime).SetEase(panelOpenEase));
+        if (panelCanvasGroup != null) seq.Join(panelCanvasGroup.DOFade(1f, panelTransitionTime * 0.6f));
         seq.SetLink(gameObject);
 
         SetFocus(FocusLevel.Tabs);
@@ -192,8 +184,8 @@ public class UIManager : MonoBehaviour
         Cursor.visible = false;
 
         Sequence seq = DOTween.Sequence().SetUpdate(true);
-        if (panelRoot != null) seq.Join(panelRoot.DOAnchorPos(panelHiddenAnchoredPos, panelTransitionTime).SetEase(panelCloseEase));
-        if (panelCanvasGroup != null) seq.Join(panelCanvasGroup.DOFade(0f, panelTransitionTime * 0.8f));
+        if (panelRoot != null) seq.Join(panelRoot.DOAnchorPos(panelPeekPos, panelTransitionTime).SetEase(panelCloseEase));
+        if (panelCanvasGroup != null) seq.Join(panelCanvasGroup.DOFade(peekAlpha, panelTransitionTime * 0.8f));
         seq.OnComplete(() =>
         {
             if (panelCanvasGroup != null)
@@ -206,12 +198,26 @@ public class UIManager : MonoBehaviour
         seq.SetLink(gameObject);
     }
 
+    // Completamente fuera de pantalla + invisible. Usado solo en startHidden.
     private void HideInstant()
     {
-        if (panelRoot != null) panelRoot.anchoredPosition = panelHiddenAnchoredPos;
+        if (panelRoot != null) panelRoot.anchoredPosition = panelOffscreenPos;
         if (panelCanvasGroup != null)
         {
             panelCanvasGroup.alpha = 0f;
+            panelCanvasGroup.blocksRaycasts = false;
+            panelCanvasGroup.interactable = false;
+        }
+        IsOpen = false;
+    }
+
+    // Estado de reposo: el panel asoma ligeramente por la izquierda.
+    private void ShowPeekInstant()
+    {
+        if (panelRoot != null) panelRoot.anchoredPosition = panelPeekPos;
+        if (panelCanvasGroup != null)
+        {
+            panelCanvasGroup.alpha = peekAlpha;
             panelCanvasGroup.blocksRaycasts = false;
             panelCanvasGroup.interactable = false;
         }
@@ -228,33 +234,24 @@ public class UIManager : MonoBehaviour
         if (ammoTabContent != null) ammoTabContent.SetActive(type == TabType.Ammo);
         if (inventoryTabContent != null) inventoryTabContent.SetActive(type == TabType.Inventory);
 
-        ApplyTabVisuals();
-
         if (changed && !instant) AudioManager.Instance?.PlayUI(tabSwapSfxId);
 
         // Cuando cambias de tab, el foco vuelve al nivel Tabs (la sub-selección no se conserva)
         if (Focus != FocusLevel.Tabs && changed) SetFocus(FocusLevel.Tabs);
 
-        // Refresh focus en carruseles
-        ammoCarousel?.SetFocus(type == TabType.Ammo && Focus == FocusLevel.Items);
-        inventoryCarousel?.SetFocus(type == TabType.Inventory && Focus == FocusLevel.Items);
+        // Inactivo primero, activo después (misma razón: shared CanvasGroup).
+        if (type == TabType.Ammo)
+        {
+            inventoryCarousel?.SetFocus(false);
+            ammoCarousel?.SetFocus(Focus == FocusLevel.Items);
+        }
+        else
+        {
+            ammoCarousel?.SetFocus(false);
+            inventoryCarousel?.SetFocus(Focus == FocusLevel.Items);
+        }
     }
 
-    private void ApplyTabVisuals()
-    {
-        ApplyTabVisual(ammoTabButton, ActiveTab == TabType.Ammo);
-        ApplyTabVisual(inventoryTabButton, ActiveTab == TabType.Inventory);
-    }
-
-    private void ApplyTabVisual(TabButton tab, bool isActive)
-    {
-        if (tab == null || tab.root == null) return;
-
-        Color targetCol = isActive ? tab.activeColor : tab.inactiveColor;
-        if (tab.background != null) tab.background.DOColor(targetCol, 0.18f).SetUpdate(true).SetLink(tab.root.gameObject);
-        if (tab.label != null) tab.label.DOColor(targetCol, 0.18f).SetUpdate(true).SetLink(tab.root.gameObject);
-        tab.root.DOScale(isActive ? 1.08f : 1f, 0.18f).SetUpdate(true).SetLink(tab.root.gameObject);
-    }
     #endregion
 
     #region Focus
@@ -263,12 +260,21 @@ public class UIManager : MonoBehaviour
         Focus = level;
         bool itemsFocused = (level == FocusLevel.Items);
 
-        ammoCarousel?.SetFocus(itemsFocused && ActiveTab == TabType.Ammo);
-        inventoryCarousel?.SetFocus(itemsFocused && ActiveTab == TabType.Inventory);
+        // Inactivo primero, activo después: si comparten el mismo CanvasGroup,
+        // el activo siempre gana la última escritura del alpha.
+        if (ActiveTab == TabType.Ammo)
+        {
+            inventoryCarousel?.SetFocus(false);
+            ammoCarousel?.SetFocus(itemsFocused);
+        }
+        else
+        {
+            ammoCarousel?.SetFocus(false);
+            inventoryCarousel?.SetFocus(itemsFocused);
+        }
 
-        // Pequeño feedback visual en tabs cuando dejan de tener el foco
         if (tabsRoot != null)
-            tabsRoot.DOScale(itemsFocused ? 0.92f : 1f, 0.18f).SetUpdate(true).SetLink(tabsRoot.gameObject);
+            tabsRoot.localScale = Vector3.one * (itemsFocused ? 0.92f : 1f);
     }
     #endregion
 
@@ -289,17 +295,21 @@ public class UIManager : MonoBehaviour
             return;
         }
 
+        bool consumed = false;
         if (ActiveTab == TabType.Inventory && playerInventory != null)
         {
             playerInventory.CurrentIndex = carousel.CenterIndex;
-            bool used = playerInventory.UseCurrentItem();
-            AudioManager.Instance?.PlayUI(used ? useSfxId : denySfxId);
+            consumed = playerInventory.UseCurrentItem();
+            AudioManager.Instance?.PlayUI(consumed ? useSfxId : denySfxId);
         }
         else
         {
             // Tab Ammo: el Use() del AmmoTypeData cambia el tipo de bala activo del arma
-            entry.Value.data.Use(playerInventory != null ? playerInventory.gameObject : gameObject);
+            consumed = entry.Value.data.Use(playerInventory != null ? playerInventory.gameObject : gameObject);
         }
+
+        // Estática de "refresco" tras consumir un item.
+        if (consumed) carousel.FlashStatic();
     }
     #endregion
 }

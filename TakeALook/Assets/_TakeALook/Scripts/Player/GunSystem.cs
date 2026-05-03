@@ -58,6 +58,10 @@ public class GunSystem : MonoBehaviour
     [Tooltip("Empezar la partida con la linterna desbloqueada (testing). Desactívalo en producción.")]
     [SerializeField] private bool startWithFlashlight = true;
 
+    [Header("Pistol System")]
+    [Tooltip("Empezar la partida con la pistola desbloqueada (testing). Desactívalo en producción para que el jugador deba recogerla.")]
+    [SerializeField] private bool startWithPistol = true;
+
     [Header("Audio IDs - Weapon Transitions")]
     [SerializeField] private string drawSfxId   = "gun_draw";
     [SerializeField] private string sheathSfxId = "gun_sheath";
@@ -144,13 +148,21 @@ public class GunSystem : MonoBehaviour
 
     private bool _isFlashlightOn = false;
     private bool _hasFlashlight = false;
+    private bool _hasPistol = false;
     private Tween _flashlightTween;
     public bool HasFlashlight { get => _hasFlashlight; set => _hasFlashlight = value; }
+    public bool HasPistol { get => _hasPistol; set => _hasPistol = value; }
 
     public BulletType CurrentBulletType => currentBullet;
     public int GetMag(BulletType type) => GetStatsRef(type).currentMag;
     public int GetReserve(BulletType type) => GetStatsRef(type).reserveAmmo;
     public int GetMagCapacity(BulletType type) => GetStatsRef(type).magCapacity;
+    public int GetMaxReserve(BulletType type) => GetStatsRef(type).maxReserveAmmo;
+    public bool CanAddAmmoFully(BulletType type, int amount)
+    {
+        var s = GetStatsRef(type);
+        return s.reserveAmmo + amount <= s.maxReserveAmmo;
+    }
 
     public bool IsCurrentMagEmpty => _activeStats.currentMag <= 0;
 
@@ -191,6 +203,7 @@ public class GunSystem : MonoBehaviour
         _masterActionLock = false;
         _isFlashlightOn = false;
         _hasFlashlight = startWithFlashlight;
+        _hasPistol = startWithPistol;
 
         if (wolfStats.magCapacity <= 0) { wolfStats.magCapacity = 30; wolfStats.currentMag = 30; wolfStats.reserveAmmo = 90; wolfStats.damage = 10; wolfStats.range = 100f; wolfStats.maxReserveAmmo = 99; }
         if (bullStats.magCapacity <= 0) { bullStats.magCapacity = 30; bullStats.currentMag = 30; bullStats.reserveAmmo = 90; bullStats.damage = 15; bullStats.range = 100f; bullStats.maxReserveAmmo = 99; }
@@ -390,6 +403,7 @@ public class GunSystem : MonoBehaviour
     {
         if (!context.performed) return;
         if (IsInputBlocked()) return;
+        if (!_hasPistol) return; // sin pistola en el inventario, no se puede sacar
 
         if (!CanStartDrawSheathNow()) { BufferAction(BufferedAction.DrawToggle); return; }
         TryDrawToggleImmediate();

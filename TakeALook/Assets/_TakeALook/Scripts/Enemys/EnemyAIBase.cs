@@ -117,6 +117,16 @@ public class EnemyAIBase : MonoBehaviour
         if (anim == null) anim = GetComponentInChildren<Animator>();
         _enemyHealth = GetComponent<EnemyHealth>();
 
+        // Asegura que el GameObject del Animator pueda recibir eventos de animación
+        // (footstep, roar, hit, death). Sin esto, los AnimationEvent fallan con
+        // "has no receiver" cuando el Animator vive en un hijo distinto al del EnemyAIBase.
+        if (anim != null && anim.gameObject != gameObject
+            && anim.GetComponent<AnimationEventForwarder>() == null
+            && anim.GetComponent<EnemyAIBase>() == null)
+        {
+            anim.gameObject.AddComponent<AnimationEventForwarder>();
+        }
+
         if (agent != null)
         {
             agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;

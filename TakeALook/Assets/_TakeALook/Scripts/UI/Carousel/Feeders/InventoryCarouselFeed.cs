@@ -29,7 +29,7 @@ public class InventoryCarouselFeed : MonoBehaviour
         foreach (var slot in inventory.Slots)
             entries.Add(new CarouselUI.Entry { data = slot.data, count = slot.count });
 
-        carousel.SetEntries(entries, inventory.CurrentIndex, animate: true);
+        carousel.SetEntries(entries, inventory.CurrentIndex);
     }
 
     /// <summary>

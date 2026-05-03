@@ -17,8 +17,15 @@ public class ItemPreview3D : MonoBehaviour
     public static ItemPreview3D Instance { get; private set; }
 
     [Header("Setup")]
+    [SerializeField] private Camera previewCamera;
     [SerializeField] private Transform modelAnchor;
     [SerializeField] private RawImage targetRawImage; // se enseña/oculta automáticamente
+
+    [Header("Render Texture")]
+    [SerializeField] private int rtWidth = 256;
+    [SerializeField] private int rtHeight = 256;
+    [Tooltip("Profundidad del depth buffer (24 = recomendado para evitar warning de SRP).")]
+    [SerializeField] private int rtDepthBits = 24;
 
     [Header("Animación seleccionado")]
     [SerializeField] private float rotationSpeed = 45f;
@@ -30,12 +37,35 @@ public class ItemPreview3D : MonoBehaviour
     private bool _isSelected;
     private Tween _hoverTween;
     private Vector3 _baseLocalPos;
+    private RenderTexture _rt;
 
     private void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
+        SetupRenderTexture();
         if (targetRawImage != null) targetRawImage.enabled = false;
+    }
+
+    // Crea una RenderTexture en runtime con depth buffer válido y la asigna a la
+    // cámara y a la RawImage. Esto evita el warning del Render Graph API que aparece
+    // cuando una RT serializada en disco no tiene depth (URP la rechaza).
+    private void SetupRenderTexture()
+    {
+        if (previewCamera == null) return;
+
+        _rt = new RenderTexture(rtWidth, rtHeight, Mathf.Max(16, rtDepthBits), RenderTextureFormat.ARGB32)
+        {
+            name = "ItemPreview3D_RT_runtime",
+            antiAliasing = 1,
+            useMipMap = false,
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear
+        };
+        _rt.Create();
+
+        previewCamera.targetTexture = _rt;
+        if (targetRawImage != null) targetRawImage.texture = _rt;
     }
 
     private void Update()
@@ -117,5 +147,11 @@ public class ItemPreview3D : MonoBehaviour
     private void OnDestroy()
     {
         _hoverTween?.Kill();
+        if (_rt != null)
+        {
+            if (previewCamera != null && previewCamera.targetTexture == _rt) previewCamera.targetTexture = null;
+            _rt.Release();
+            Destroy(_rt);
+        }
     }
 }

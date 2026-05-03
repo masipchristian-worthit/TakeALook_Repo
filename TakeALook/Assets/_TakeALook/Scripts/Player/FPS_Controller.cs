@@ -442,23 +442,15 @@ public class FPS_Controller : MonoBehaviour
     }
 
     public void OnToggleUI(InputAction.CallbackContext context)
-    {
-        if (context.performed) { /* Lógica de ToggleUI */ }
-    }
+        => UIManager.Instance?.OnToggleUI(context);
 
     public void OnUISliderLeft(InputAction.CallbackContext context)
-    {
-        if (context.performed) { /* Lógica UISliderLeft */ }
-    }
+        => UIManager.Instance?.OnUISliderLeft(context);
 
     public void OnUISliderRight(InputAction.CallbackContext context)
-    {
-        if (context.performed) { /* Lógica UISliderRight */ }
-    }
+        => UIManager.Instance?.OnUISliderRight(context);
 
     public void OnUIInteract(InputAction.CallbackContext context)
-    {
-        if (context.performed) { /* Lógica UIInteract */ }
-    }
+        => UIManager.Instance?.OnUIInteract(context);
     #endregion
 }

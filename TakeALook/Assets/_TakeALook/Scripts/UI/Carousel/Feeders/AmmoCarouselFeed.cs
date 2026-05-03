@@ -89,6 +89,7 @@ public class AmmoCarouselFeed : MonoBehaviour
             if (entries[i].data is AmmoTypeData ad && ad.bulletType == gunSystem.CurrentBulletType)
             { activeIdx = i; break; }
 
-        carousel.SetEntries(entries, reorderToActive ? activeIdx : (int?)null, animate: reorderToActive);
+        // El polling no dispara estática (no es acción del usuario); sólo ScrollTo/Use lo hacen.
+        carousel.SetEntries(entries, reorderToActive ? activeIdx : (int?)null);
     }
 }

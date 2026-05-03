@@ -72,17 +72,28 @@ public class PickableItem : MonoBehaviour
 
     /// <summary>
     /// Llamado cuando el jugador interactúa con este item.
+    /// La lógica concreta (añadir a inventario / consumir directo) la decide ItemData.OnPickup.
     /// </summary>
     public bool TryPickup(PlayerInventory inventory)
     {
         if (_alreadyPicked || itemData == null || inventory == null) return false;
 
-        bool added = inventory.AddItem(itemData, amount);
-        if (!added) return false;
+        // Cada ItemData decide si va al inventario o se consume al recoger (Pistola / Linterna).
+        bool ok = itemData.OnPickup(inventory.gameObject, amount, inventory);
+        if (!ok)
+        {
+            // Recogida rechazada (inventario lleno, ya recogida, etc): feedback de denegación.
+            AudioManager.Instance?.PlaySFX(itemData.denySoundId, transform.position);
+            return false;
+        }
 
         _alreadyPicked = true;
         GameManager.Instance?.RegisterPickedItem(uniqueId);
-        AudioManager.Instance?.PlaySFX(itemData.pickupSoundId, transform.position);
+
+        // El sonido de recogida lo dispara OnPickup de los items que se consumen al recoger
+        // (Pistola/Linterna). Para los que van al inventario, lo disparamos aquí.
+        if (!(itemData is PistolItemData) && !(itemData is FlashlightItemData))
+            AudioManager.Instance?.PlaySFX(itemData.pickupSoundId, transform.position);
 
         if (pickupVFX != null) Instantiate(pickupVFX, transform.position, Quaternion.identity);
 
