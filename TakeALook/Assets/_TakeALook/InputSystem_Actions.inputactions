@@ -464,6 +464,17 @@
                 },
                 {
                     "name": "",
+                    "id": "cac20631-931a-4b5c-8459-2b6ab48c6b31",
+                    "path": "<Keyboard>/downArrow",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "UISliderLeft",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "",
                     "id": "11111111-2222-3333-4444-555555555505",
                     "path": "<Keyboard>/rightArrow",
                     "interactions": "",
@@ -477,6 +488,17 @@
                     "name": "",
                     "id": "11111111-2222-3333-4444-555555555506",
                     "path": "<Gamepad>/rightShoulder",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "UISliderRight",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "",
+                    "id": "55bf830b-7e8c-45d1-9545-e3e2be150d9e",
+                    "path": "<Keyboard>/upArrow",
                     "interactions": "",
                     "processors": "",
                     "groups": "",

@@ -43,8 +43,45 @@ public class ItemPreview3D : MonoBehaviour
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
+
+        // El RectTransform de este nodo en la escena venía con Scale 0/0/0 (probable
+        // herencia de un tween de cierre que se quedó pegado), lo que hacía que la
+        // RawImage no se renderizase nunca aunque la RT se generase OK. Forzamos
+        // escala 1 al arrancar para garantizar que el preview siempre sea visible.
+        var rt = transform as RectTransform;
+        if (rt != null && rt.localScale.sqrMagnitude < 0.0001f)
+            rt.localScale = Vector3.one;
+
+        AutoWireRefs();
         SetupRenderTexture();
         if (targetRawImage != null) targetRawImage.enabled = false;
+
+        if (previewCamera == null)
+            Debug.LogError($"[ItemPreview3D:{name}] previewCamera no asignada — el modelo 3D no se renderizará.", this);
+        if (modelAnchor == null)
+            Debug.LogError($"[ItemPreview3D:{name}] modelAnchor no asignado — no hay dónde instanciar el modelo.", this);
+        if (targetRawImage == null)
+            Debug.LogError($"[ItemPreview3D:{name}] targetRawImage no asignada — no hay dónde mostrar la RenderTexture.", this);
+    }
+
+    private void AutoWireRefs()
+    {
+        // Auto-wire por hijos para que un setup desde el editor con sólo el
+        // gameobject del preview funcione sin tener que arrastrar refs a mano.
+        if (previewCamera == null) previewCamera = GetComponentInChildren<Camera>(true);
+        if (targetRawImage == null) targetRawImage = GetComponentInChildren<RawImage>(true);
+        if (modelAnchor == null)
+        {
+            // Busca un hijo cuyo nombre contenga "anchor" o "model"; si no, usa
+            // el propio transform de la cámara como punto de spawn.
+            foreach (var t in GetComponentsInChildren<Transform>(true))
+            {
+                if (t == transform) continue;
+                string n = t.name.ToLowerInvariant();
+                if (n.Contains("anchor") || n.Contains("model")) { modelAnchor = t; break; }
+            }
+            if (modelAnchor == null && previewCamera != null) modelAnchor = previewCamera.transform;
+        }
     }
 
     // Crea una RenderTexture en runtime con depth buffer válido y la asigna a la
@@ -132,6 +169,13 @@ public class ItemPreview3D : MonoBehaviour
         ClearCurrent();
         _currentData = null;
         if (targetRawImage != null) targetRawImage.enabled = false;
+    }
+
+    public void SetTargetRawImage(RawImage rawImage)
+    {
+        targetRawImage = rawImage;
+        if (targetRawImage != null && _rt != null)
+            targetRawImage.texture = _rt;
     }
 
     private void ClearCurrent()

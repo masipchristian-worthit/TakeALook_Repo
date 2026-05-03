@@ -14,6 +14,8 @@ using TMPro;
 /// </summary>
 public class CarouselUI : MonoBehaviour
 {
+    public enum FocusState { Unfocused = 0, Preview = 1, Focused = 2 }
+
     public struct Entry
     {
         public ItemData data;
@@ -79,6 +81,10 @@ public class CarouselUI : MonoBehaviour
     private List<Entry> _entries = new List<Entry>();
     private int _centerIndex = 0;
     private bool _hasFocus = true;
+    private FocusState _focusState = FocusState.Unfocused;
+    private int _lastAmmoIndex = 0;
+    private int _lastInventoryIndex = 0;
+    private bool _isAmmoCarousel = true;
 
     public int CenterIndex => _centerIndex;
     public int Count => _entries.Count;
@@ -87,9 +93,20 @@ public class CarouselUI : MonoBehaviour
 
     private void Awake()
     {
+        _isAmmoCarousel = gameObject.name.ToLowerInvariant().Contains("ammo");
         AutoWireLabels();
         DiagnoseLayout();
         BuildSlots();
+        WireItemPreview3D();
+    }
+
+    private void WireItemPreview3D()
+    {
+        // Busca la RawImage que renderiza el modelo 3D (dentro del carrusel) y la
+        // asigna a ItemPreview3D.Instance para que sepa dónde mostrar la RenderTexture.
+        var rawImage = GetComponentInChildren<RawImage>(true);
+        if (rawImage != null)
+            ItemPreview3D.Instance?.SetTargetRawImage(rawImage);
     }
 
     private void AutoWireLabels()
@@ -196,12 +213,66 @@ public class CarouselUI : MonoBehaviour
 
     public void SetFocus(bool focused)
     {
-        _hasFocus = focused;
+        SetFocusState(focused ? FocusState.Focused : FocusState.Unfocused);
+    }
+
+    public void SetFocusState(FocusState focusState)
+    {
+        FocusState oldState = _focusState;
+        _focusState = focusState;
+        _hasFocus = (focusState == FocusState.Focused);
+
+        if (focusState != FocusState.Unfocused && oldState == FocusState.Unfocused)
+        {
+            RestoreSavedIndex();
+        }
+        else if (focusState == FocusState.Unfocused && oldState != FocusState.Unfocused)
+        {
+            SaveCurrentIndex();
+        }
+
+        float alpha = focusState switch
+        {
+            FocusState.Unfocused => unfocusedAlpha,
+            FocusState.Preview => Mathf.Lerp(unfocusedAlpha, focusedAlpha, 0.5f),
+            FocusState.Focused => focusedAlpha,
+            _ => unfocusedAlpha
+        };
+
         if (focusCanvasGroup != null)
-            focusCanvasGroup.alpha = focused ? focusedAlpha : unfocusedAlpha;
+            focusCanvasGroup.alpha = alpha;
+
         if (focusBorder != null)
-            focusBorder.color = focused ? focusedBorderColor : unfocusedBorderColor;
+        {
+            Color borderColor = focusState switch
+            {
+                FocusState.Unfocused => unfocusedBorderColor,
+                FocusState.Preview => new Color(
+                    focusedBorderColor.r, focusedBorderColor.g, focusedBorderColor.b,
+                    focusedBorderColor.a * 0.6f
+                ),
+                FocusState.Focused => focusedBorderColor,
+                _ => unfocusedBorderColor
+            };
+            focusBorder.color = borderColor;
+        }
+
         ApplyCenterPreview();
+    }
+
+    private void SaveCurrentIndex()
+    {
+        if (_isAmmoCarousel)
+            _lastAmmoIndex = _centerIndex;
+        else
+            _lastInventoryIndex = _centerIndex;
+    }
+
+    private void RestoreSavedIndex()
+    {
+        int savedIndex = _isAmmoCarousel ? _lastAmmoIndex : _lastInventoryIndex;
+        _centerIndex = Mathf.Clamp(savedIndex, 0, Mathf.Max(0, _entries.Count - 1));
+        Refresh();
     }
 
     public void Next()
@@ -229,6 +300,20 @@ public class CarouselUI : MonoBehaviour
 
     /// <summary>Dispara la estática manualmente (p.ej. tras consumir un item).</summary>
     public void FlashStatic() => staticOverlay?.Flash();
+
+    /// <summary>Intenta consumir el item seleccionado del carrusel.</summary>
+    public bool TryConsumeCurrentItem(GameObject user)
+    {
+        var entry = CurrentEntry;
+        if (entry == null || entry.Value.data == null)
+            return false;
+
+        bool consumed = entry.Value.data.Use(user);
+        if (consumed)
+            FlashStatic();
+
+        return consumed;
+    }
 
     private void Refresh()
     {
@@ -261,8 +346,11 @@ public class CarouselUI : MonoBehaviour
             }
 
             _slots[i].SetData(data, count);
-            _slots[i].SetVisible(data != null);
-            _slots[i].SetCenter(offset == 0);
+            // El slot central NUNCA se desactiva, aunque no haya item: siempre debe verse
+            // como "marco" del carrusel para que la transición entre pestañas no parpadee.
+            bool isCenter = (offset == 0);
+            _slots[i].SetVisible(isCenter || data != null);
+            _slots[i].SetCenter(isCenter);
 
             // Posición y escala instantáneas (la transición la cubre la estática)
             var rt = _slots[i].Root;

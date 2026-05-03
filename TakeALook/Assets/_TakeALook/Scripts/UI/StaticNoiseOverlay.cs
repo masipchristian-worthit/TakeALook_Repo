@@ -16,9 +16,21 @@ public class StaticNoiseOverlay : MonoBehaviour
     [Header("Textura procedural")]
     [Tooltip("Resolución del ruido (cuanto más bajo, más 'gordo' el píxel).")]
     [SerializeField] private int noiseResolution = 64;
+    [Tooltip("Color 1 para interpolación de ruido.")]
+    [SerializeField] private Color noiseColor1 = Color.black;
+    [Tooltip("Color 2 para interpolación de ruido.")]
+    [SerializeField] private Color noiseColor2 = Color.white;
     [Tooltip("Qué tan denso/oscuro queda el ruido.")]
     [Range(0f, 1f)]
     [SerializeField] private float noiseContrast = 1f;
+
+    [Header("Edge Fade")]
+    [Tooltip("Intensidad del fade radial hacia los bordes (0 = sin fade, 1 = fade máximo).")]
+    [Range(0f, 1f)]
+    [SerializeField] private float edgeFadeStrength = 0.5f;
+    [Tooltip("Distancia desde el centro donde comienza el fade (0-0.5 normalizado).")]
+    [Range(0f, 0.5f)]
+    [SerializeField] private float edgeFadeDistance = 0.45f;
 
     [Header("Animación")]
     [Tooltip("Duración total del flash (in + hold + out).")]
@@ -53,7 +65,9 @@ public class StaticNoiseOverlay : MonoBehaviour
     private void BuildNoiseTexture()
     {
         int res = Mathf.Max(8, noiseResolution);
-        _noiseTex = new Texture2D(res, res, TextureFormat.R8, false)
+        // RGBA32 (no R8): R8 sólo guarda el canal rojo, por eso el ruido salía
+        // siempre en rojo/negro y el fade alpha era ignorado.
+        _noiseTex = new Texture2D(res, res, TextureFormat.RGBA32, false)
         {
             filterMode = FilterMode.Point,
             wrapMode = TextureWrapMode.Repeat,
@@ -62,18 +76,55 @@ public class StaticNoiseOverlay : MonoBehaviour
         _pixelBuffer = new Color32[res * res];
         RegenerateNoise();
         _rawImage.texture = _noiseTex;
+        // Aseguramos que el tint de la RawImage no anule los colores de la textura.
+        var c = _rawImage.color; c.r = 1f; c.g = 1f; c.b = 1f; _rawImage.color = c;
     }
 
     private void RegenerateNoise()
     {
-        for (int i = 0; i < _pixelBuffer.Length; i++)
+        int res = _noiseTex.width;
+        for (int y = 0; y < res; y++)
         {
-            int v = _rng.Next(0, 256);
-            // Aplicar contraste: empuja hacia los extremos.
-            float t = v / 255f;
-            t = Mathf.Lerp(0.5f, t, noiseContrast);
-            byte b = (byte)(t * 255f);
-            _pixelBuffer[i] = new Color32(b, b, b, 255);
+            for (int x = 0; x < res; x++)
+            {
+                int i = y * res + x;
+
+                // Generar ruido random y aplicar contraste
+                int randomValue = _rng.Next(0, 256);
+                float t = randomValue / 255f;
+                t = Mathf.Lerp(0.5f, t, noiseContrast);
+
+                // Interpolar entre los dos colores configurados
+                Color noiseColor = Color.Lerp(noiseColor1, noiseColor2, t);
+
+                // Calcular fade radial desde el centro
+                float u = x / (float)res;
+                float v = y / (float)res;
+                float distFromCenter = Mathf.Sqrt((u - 0.5f) * (u - 0.5f) + (v - 0.5f) * (v - 0.5f));
+
+                // Fade alpha: máximo en el centro, desvanece hacia los bordes
+                float alpha = 1f;
+                if (distFromCenter > edgeFadeDistance)
+                {
+                    alpha = 0f;
+                }
+                else if (distFromCenter > edgeFadeDistance * (1f - edgeFadeStrength))
+                {
+                    // Zona de transición
+                    float fadeStart = edgeFadeDistance * (1f - edgeFadeStrength);
+                    float fadeRange = edgeFadeDistance - fadeStart;
+                    float fadeProgress = (distFromCenter - fadeStart) / fadeRange;
+                    alpha = Mathf.Lerp(1f, 0f, fadeProgress);
+                }
+
+                noiseColor.a = alpha;
+                _pixelBuffer[i] = new Color32(
+                    (byte)(noiseColor.r * 255f),
+                    (byte)(noiseColor.g * 255f),
+                    (byte)(noiseColor.b * 255f),
+                    (byte)(alpha * 255f)
+                );
+            }
         }
         _noiseTex.SetPixels32(_pixelBuffer);
         _noiseTex.Apply(false);

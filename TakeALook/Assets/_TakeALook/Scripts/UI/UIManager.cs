@@ -102,15 +102,25 @@ public class UIManager : MonoBehaviour
     {
         if (!ctx.performed || !IsOpen) return;
 
+        bool shiftPressed = Keyboard.current?.shiftKey.isPressed ?? false;
+
         if (Focus == FocusLevel.Tabs)
         {
             SwitchTab(ActiveTab == TabType.Ammo ? TabType.Inventory : TabType.Ammo);
         }
         else // Items
         {
-            GetActiveCarousel()?.Previous();
-            AudioManager.Instance?.PlayUI(moveSfxId);
-            if (ActiveTab == TabType.Inventory) inventoryFeed?.SyncSelectionFromCarousel();
+            if (shiftPressed)
+            {
+                SwitchTab(ActiveTab == TabType.Ammo ? TabType.Inventory : TabType.Ammo);
+                AudioManager.Instance?.PlayUI(tabSwapSfxId);
+            }
+            else
+            {
+                GetActiveCarousel()?.Previous();
+                AudioManager.Instance?.PlayUI(moveSfxId);
+                if (ActiveTab == TabType.Inventory) inventoryFeed?.SyncSelectionFromCarousel();
+            }
         }
     }
 
@@ -118,15 +128,25 @@ public class UIManager : MonoBehaviour
     {
         if (!ctx.performed || !IsOpen) return;
 
+        bool shiftPressed = Keyboard.current?.shiftKey.isPressed ?? false;
+
         if (Focus == FocusLevel.Tabs)
         {
             SwitchTab(ActiveTab == TabType.Ammo ? TabType.Inventory : TabType.Ammo);
         }
-        else
+        else // Items
         {
-            GetActiveCarousel()?.Next();
-            AudioManager.Instance?.PlayUI(moveSfxId);
-            if (ActiveTab == TabType.Inventory) inventoryFeed?.SyncSelectionFromCarousel();
+            if (shiftPressed)
+            {
+                SwitchTab(ActiveTab == TabType.Ammo ? TabType.Inventory : TabType.Ammo);
+                AudioManager.Instance?.PlayUI(tabSwapSfxId);
+            }
+            else
+            {
+                GetActiveCarousel()?.Next();
+                AudioManager.Instance?.PlayUI(moveSfxId);
+                if (ActiveTab == TabType.Inventory) inventoryFeed?.SyncSelectionFromCarousel();
+            }
         }
     }
 
@@ -236,20 +256,11 @@ public class UIManager : MonoBehaviour
 
         if (changed && !instant) AudioManager.Instance?.PlayUI(tabSwapSfxId);
 
-        // Cuando cambias de tab, el foco vuelve al nivel Tabs (la sub-selección no se conserva)
-        if (Focus != FocusLevel.Tabs && changed) SetFocus(FocusLevel.Tabs);
-
-        // Inactivo primero, activo después (misma razón: shared CanvasGroup).
-        if (type == TabType.Ammo)
-        {
-            inventoryCarousel?.SetFocus(false);
-            ammoCarousel?.SetFocus(Focus == FocusLevel.Items);
-        }
-        else
-        {
-            ammoCarousel?.SetFocus(false);
-            inventoryCarousel?.SetFocus(Focus == FocusLevel.Items);
-        }
+        // El foco se PRESERVA al cambiar de pestaña: si estabas dentro de los items
+        // del carrusel de munición y saltas al de inventario, sigues con el slot
+        // central seleccionado en el nuevo carrusel — sin tener que volver a entrar.
+        // Esto permite navegar entre carruseles sin depender de TAB.
+        SetFocus(Focus);
     }
 
     #endregion
@@ -260,21 +271,30 @@ public class UIManager : MonoBehaviour
         Focus = level;
         bool itemsFocused = (level == FocusLevel.Items);
 
+        CarouselUI.FocusState activeState = itemsFocused
+            ? CarouselUI.FocusState.Focused
+            : CarouselUI.FocusState.Preview;
+
+        // El carrusel inactivo se queda en Preview (no Unfocused) para que su slot
+        // central siga visible/encendido al pasar de una pestaña a otra. Sólo el
+        // carrusel activo entra en Focused cuando estamos en el nivel de items.
         // Inactivo primero, activo después: si comparten el mismo CanvasGroup,
         // el activo siempre gana la última escritura del alpha.
         if (ActiveTab == TabType.Ammo)
         {
-            inventoryCarousel?.SetFocus(false);
-            ammoCarousel?.SetFocus(itemsFocused);
+            inventoryCarousel?.SetFocusState(CarouselUI.FocusState.Preview);
+            ammoCarousel?.SetFocusState(activeState);
         }
         else
         {
-            ammoCarousel?.SetFocus(false);
-            inventoryCarousel?.SetFocus(itemsFocused);
+            ammoCarousel?.SetFocusState(CarouselUI.FocusState.Preview);
+            inventoryCarousel?.SetFocusState(activeState);
         }
 
-        if (tabsRoot != null)
-            tabsRoot.localScale = Vector3.one * (itemsFocused ? 0.92f : 1f);
+        // No tocamos tabsRoot.localScale: en la escena actual ese ref está
+        // apuntando a un nodo que arrastra todo el panel y al entrar a items
+        // hacía que la UI entera se viera más pequeña. El feedback de foco ya
+        // lo da el alpha del carrusel y el borde de foco.
     }
     #endregion
 
