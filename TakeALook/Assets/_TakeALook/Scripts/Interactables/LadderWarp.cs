@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.InputSystem;
 using TMPro;
 
 public class LadderWarp : MonoBehaviour
@@ -20,7 +21,6 @@ public class LadderWarp : MonoBehaviour
     [Header("Interaction")]
     [SerializeField] private Transform player;
     [SerializeField] private float interactDistance = 2.2f;
-    [SerializeField] private KeyCode interactKey = KeyCode.E;
 
     [Header("World Text")]
     [SerializeField] private TextMeshPro pressEText;
@@ -36,12 +36,18 @@ public class LadderWarp : MonoBehaviour
     private bool _playerNear;
     private bool _isWarping;
 
+    // BUG FIX: "interactKey = KeyCode.E" usaba el Input System ANTIGUO.
+    // Todo el proyecto usa el nuevo (Keyboard.current), así que la tecla nunca se detectaba.
+    // Se elimina el campo KeyCode y se lee directamente igual que en FPS_Controller e interacciones.
+
+    private bool IsInputBlocked() =>
+        (UIManager.Instance != null && UIManager.Instance.IsUIPanelOpen());
+
     private void Start()
     {
         if (player == null)
         {
             GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
-
             if (playerObj != null)
                 player = playerObj.transform;
         }
@@ -61,10 +67,13 @@ public class LadderWarp : MonoBehaviour
         float distance = Vector3.Distance(player.position, transform.position);
         _playerNear = distance <= interactDistance;
 
+        // Ocultar el texto si hay UI bloqueando la interacción
+        bool showPrompt = _playerNear && !IsInputBlocked();
         if (pressEText != null)
-            pressEText.gameObject.SetActive(_playerNear);
+            pressEText.gameObject.SetActive(showPrompt);
 
-        if (_playerNear && Input.GetKeyDown(interactKey))
+        // BUG FIX: Usar nuevo Input System igual que el resto del proyecto
+        if (_playerNear && !IsInputBlocked() && Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
         {
             Warp();
         }
@@ -91,20 +100,18 @@ public class LadderWarp : MonoBehaviour
         if (pressEText != null)
             pressEText.gameObject.SetActive(false);
 
-        // Guardamos el spawn point para que LadderWarpRouter coloque al jugador al cargar la escena nueva.
+        // Guardamos el spawn point para que LadderSpawnPoint coloque al jugador al cargar la escena nueva.
         LadderWarpRouter.PendingSpawnPointId = targetSpawnPointId;
-        LadderWarpRouter.PendingFadeIn = false;
+        LadderWarpRouter.PendingFadeIn = fadeInAfterLoad;
+
+        Debug.Log("[LadderWarp] Guardando spawn destino: " + targetSpawnPointId);
 
         if (SceneFader.Instance != null)
         {
             if (fadeInAfterLoad)
-            {
                 SceneFader.Instance.FadeToSceneWithFadeIn(targetSceneName, fadeOutTime, fadeInTime);
-            }
             else
-            {
                 SceneFader.Instance.FadeToScene(targetSceneName, fadeOutTime);
-            }
         }
         else
         {
