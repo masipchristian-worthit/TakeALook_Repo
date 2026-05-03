@@ -18,7 +18,7 @@ public class SceneWarp : MonoBehaviour
     [SerializeField] private bool useSceneFader = true;
     [SerializeField] private float fadeOutTime = 0.5f;
 
-    [Tooltip("Activa fade in al cargar la escena nueva usando el sistema de LadderWarpRouter.")]
+    [Tooltip("Activa fade in al cargar la escena nueva.")]
     [SerializeField] private bool fadeInAfterLoad = true;
 
     [Header("Fallback Fade")]
@@ -36,12 +36,23 @@ public class SceneWarp : MonoBehaviour
         if (useSpawnPoint && !string.IsNullOrEmpty(spawnPointId))
         {
             LadderWarpRouter.PendingSpawnPointId = spawnPointId;
-            LadderWarpRouter.PendingFadeIn = fadeInAfterLoad;
+
+            // Lo dejamos en false para evitar que LadderWarpRouter haga otro fade in aparte.
+            // El fade in lo hará SceneFader con FadeToSceneWithFadeIn.
+            LadderWarpRouter.PendingFadeIn = false;
         }
 
         if (useSceneFader && SceneFader.Instance != null)
         {
-            SceneFader.Instance.FadeToScene(sceneName, fadeOutTime);
+            if (fadeInAfterLoad)
+            {
+                SceneFader.Instance.FadeToSceneWithFadeIn(sceneName, fadeOutTime);
+            }
+            else
+            {
+                SceneFader.Instance.FadeToScene(sceneName, fadeOutTime);
+            }
+
             return;
         }
 

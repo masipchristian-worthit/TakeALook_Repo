@@ -354,7 +354,7 @@ public class IntroDialogueManager : MonoBehaviour
 
         if (SceneFader.Instance != null)
         {
-            SceneFader.Instance.FadeToScene(nextSceneName);
+            SceneFader.Instance.FadeToSceneWithFadeIn(nextSceneName);
         }
         else
         {
@@ -387,7 +387,7 @@ public class IntroDialogueManager : MonoBehaviour
 
         if (SceneFader.Instance != null)
         {
-            SceneFader.Instance.FadeToScene(nextSceneName, 0.5f);
+            SceneFader.Instance.FadeToSceneWithFadeIn(nextSceneName, 0.5f);
         }
         else
         {
